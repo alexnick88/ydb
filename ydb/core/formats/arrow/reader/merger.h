@@ -11,7 +11,7 @@ namespace NKikimr::NArrow::NMerger {
 class TMergePartialStream {
 private:
 #ifndef NDEBUG
-    std::optional<TSortableBatchPosition> CurrentKeyColumns;
+    std::optional<TCursor> CurrentKeyColumns;
 #endif
     bool PossibleSameVersionFlag = true;
 
@@ -34,9 +34,9 @@ private:
         return result;
     }
 
-    std::optional<TSortableBatchPosition> DrainCurrentPosition();
+    void DrainCurrentPosition(TRecordBatchBuilder* builder, std::shared_ptr<TSortableScanData>* resultScanData, ui64* resultPosition);
 
-    void CheckSequenceInDebug(const TSortableBatchPosition& nextKeyColumnsPosition);
+    void CheckSequenceInDebug(const TRWSortableBatchPosition& nextKeyColumnsPosition);
 public:
     TMergePartialStream(std::shared_ptr<arrow::Schema> sortSchema, std::shared_ptr<arrow::Schema> dataSchema, const bool reverse, const std::vector<std::string>& versionColumnNames)
         : SortSchema(sortSchema)
@@ -49,34 +49,7 @@ public:
         Y_ABORT_UNLESS(!DataSchema || DataSchema->num_fields());
     }
 
-    void SkipToLowerBound(const TSortableBatchPosition& pos, const bool include) {
-        if (SortHeap.Empty()) {
-            return;
-        }
-        AFL_DEBUG(NKikimrServices::TX_COLUMNSHARD)("pos", pos.DebugJson().GetStringRobust())("heap", SortHeap.Current().GetKeyColumns().DebugJson().GetStringRobust());
-        while (!SortHeap.Empty()) {
-            const auto cmpResult = SortHeap.Current().GetKeyColumns().Compare(pos);
-            if (cmpResult == std::partial_ordering::greater) {
-                break;
-            }
-            if (cmpResult == std::partial_ordering::equivalent && include) {
-                break;
-            }
-            const TSortableBatchPosition::TFoundPosition skipPos = SortHeap.MutableCurrent().SkipToLower(pos);
-            AFL_DEBUG(NKikimrServices::TX_COLUMNSHARD)("pos", pos.DebugJson().GetStringRobust())("heap", SortHeap.Current().GetKeyColumns().DebugJson().GetStringRobust());
-            if (skipPos.IsEqual()) {
-                if (!include && !SortHeap.MutableCurrent().Next()) {
-                    SortHeap.RemoveTop();
-                } else {
-                    SortHeap.UpdateTop();
-                }
-            } else if (skipPos.IsLess()) {
-                SortHeap.RemoveTop();
-            } else {
-                SortHeap.UpdateTop();
-            }
-        }
-    }
+    void SkipToLowerBound(const TSortableBatchPosition& pos, const bool include);
 
     void SetPossibleSameVersion(const bool value) {
         PossibleSameVersionFlag = value;
@@ -94,7 +67,7 @@ public:
         return TStringBuilder() << "sort_heap=" << SortHeap.DebugJson();
     }
 
-    void PutControlPoint(std::shared_ptr<TSortableBatchPosition> point);
+    void PutControlPoint(const TSortableBatchPosition& point);
 
     void RemoveControlPoint();
 
@@ -120,9 +93,9 @@ public:
     }
 
     void DrainAll(TRecordBatchBuilder& builder);
-    std::shared_ptr<arrow::Table> SingleSourceDrain(const TSortableBatchPosition& readTo, const bool includeFinish, std::optional<TSortableBatchPosition>* lastResultPosition = nullptr);
-    bool DrainCurrentTo(TRecordBatchBuilder& builder, const TSortableBatchPosition& readTo, const bool includeFinish, std::optional<TSortableBatchPosition>* lastResultPosition = nullptr);
-    bool DrainToControlPoint(TRecordBatchBuilder& builder, const bool includeFinish, std::optional<TSortableBatchPosition>* lastResultPosition = nullptr);
+    std::shared_ptr<arrow::Table> SingleSourceDrain(const TSortableBatchPosition& readTo, const bool includeFinish, std::optional<TCursor>* lastResultPosition = nullptr);
+    bool DrainCurrentTo(TRecordBatchBuilder& builder, const TSortableBatchPosition& readTo, const bool includeFinish, std::optional<TCursor>* lastResultPosition = nullptr);
+    bool DrainToControlPoint(TRecordBatchBuilder& builder, const bool includeFinish, std::optional<TCursor>* lastResultPosition = nullptr);
     std::vector<std::shared_ptr<arrow::RecordBatch>> DrainAllParts(const std::map<TSortableBatchPosition, bool>& positions,
         const std::vector<std::shared_ptr<arrow::Field>>& resultFields);
 };

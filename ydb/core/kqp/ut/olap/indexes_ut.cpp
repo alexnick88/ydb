@@ -19,6 +19,7 @@ Y_UNIT_TEST_SUITE(KqpOlapIndexes) {
         auto csController = NYDBTest::TControllers::RegisterCSControllerGuard<NYDBTest::NColumnShard::TController>();
         csController->SetPeriodicWakeupActivationPeriod(TDuration::Seconds(1));
         csController->SetLagForCompactionBeforeTierings(TDuration::Seconds(1));
+        csController->SetOverrideReduceMemoryIntervalLimit(1LLU << 30);
 
         TLocalHelper(kikimr).CreateTestOlapTable();
         auto tableClient = kikimr.GetTableClient();
@@ -77,7 +78,7 @@ Y_UNIT_TEST_SUITE(KqpOlapIndexes) {
 
         {
             auto alterQuery = TStringBuilder() <<
-                "ALTER OBJECT `/Root/olapStore` (TYPE TABLESTORE) SET (ACTION=UPSERT_OPTIONS, SCHEME_NEED_ACTUALIZATION=`true`);";
+                "ALTER OBJECT `/Root/olapStore` (TYPE TABLESTORE) SET (ACTION=UPSERT_OPTIONS, SCHEME_NEED_ACTUALIZATION=`true`, EXTERNAL_GUARANTEE_EXCLUSIVE_PK=`true`);";
             auto session = tableClient.CreateSession().GetValueSync().GetSession();
             auto alterResult = session.ExecuteSchemeQuery(alterQuery).GetValueSync();
             UNIT_ASSERT_VALUES_EQUAL_C(alterResult.GetStatus(), NYdb::EStatus::SUCCESS, alterResult.GetIssues().ToString());
@@ -104,7 +105,7 @@ Y_UNIT_TEST_SUITE(KqpOlapIndexes) {
         }
     }
 
-    Y_UNIT_TEST(IndexesActualizationRebuildScheme) {
+    Y_UNIT_TEST(SchemeActualizationOnceOnStart) {
         auto settings = TKikimrSettings()
             .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
@@ -135,6 +136,8 @@ Y_UNIT_TEST_SUITE(KqpOlapIndexes) {
             filler(1100000, 300100000, 10000);
 
         }
+        const ui64 initCount = csController->GetActualizationRefreshSchemeCount().Val();
+        AFL_VERIFY(initCount == 3)("started_value", initCount);
 
         for (ui32 i = 0; i < 10; ++i) {
             auto alterQuery = TStringBuilder() <<
@@ -143,11 +146,11 @@ Y_UNIT_TEST_SUITE(KqpOlapIndexes) {
             auto alterResult = session.ExecuteSchemeQuery(alterQuery).GetValueSync();
             UNIT_ASSERT_VALUES_EQUAL_C(alterResult.GetStatus(), NYdb::EStatus::SUCCESS, alterResult.GetIssues().ToString());
         }
-        const ui64 startCount = csController->GetActualizationRefreshSchemeCount().Val();
-        AFL_VERIFY(startCount == 30);
+        const ui64 updatesCount = csController->GetActualizationRefreshSchemeCount().Val();
+        AFL_VERIFY(updatesCount == 30 + initCount)("after_modification", updatesCount);
 
         for (auto&& i : csController->GetShardActualIds()) {
-            kikimr.GetTestServer().GetRuntime()->Send(MakePipePeNodeCacheID(false), NActors::TActorId(), new TEvPipeCache::TEvForward(
+            kikimr.GetTestServer().GetRuntime()->Send(MakePipePerNodeCacheID(false), NActors::TActorId(), new TEvPipeCache::TEvForward(
                 new TEvents::TEvPoisonPill(), i, false));
         }
 
@@ -164,8 +167,8 @@ Y_UNIT_TEST_SUITE(KqpOlapIndexes) {
             CompareYson(result, R"([[20000u;]])");
         }
 
-        AFL_VERIFY(startCount + 3 /*tables count*/ * 2 /*normalizers + main_load*/ == 
-            (ui64)csController->GetActualizationRefreshSchemeCount().Val())("start", startCount)("count", csController->GetActualizationRefreshSchemeCount().Val());
+        AFL_VERIFY(updatesCount + 3 /*tablets count*/ * 1 /*normalizers*/ ==
+            (ui64)csController->GetActualizationRefreshSchemeCount().Val())("updates", updatesCount)("count", csController->GetActualizationRefreshSchemeCount().Val());
     }
 
     Y_UNIT_TEST(Indexes) {
@@ -179,6 +182,7 @@ Y_UNIT_TEST_SUITE(KqpOlapIndexes) {
 //        Tests::NCommon::TLoggerInit(kikimr).Initialize();
 
         auto csController = NYDBTest::TControllers::RegisterCSControllerGuard<NYDBTest::NColumnShard::TController>();
+        csController->SetOverrideReduceMemoryIntervalLimit(1LLU << 30);
 
         {
             auto alterQuery = TStringBuilder() <<
@@ -194,6 +198,13 @@ Y_UNIT_TEST_SUITE(KqpOlapIndexes) {
                 R"(ALTER OBJECT `/Root/olapStore` (TYPE TABLESTORE) SET (ACTION=UPSERT_INDEX, NAME=index_resource_id, TYPE=BLOOM_FILTER, 
                     FEATURES=`{"column_names" : ["resource_id", "level"], "false_positive_probability" : 0.05}`);
                 )";
+            auto session = tableClient.CreateSession().GetValueSync().GetSession();
+            auto alterResult = session.ExecuteSchemeQuery(alterQuery).GetValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(alterResult.GetStatus(), NYdb::EStatus::SUCCESS, alterResult.GetIssues().ToString());
+        }
+        {
+            auto alterQuery = TStringBuilder() <<
+                "ALTER OBJECT `/Root/olapStore` (TYPE TABLESTORE) SET (ACTION=UPSERT_OPTIONS, EXTERNAL_GUARANTEE_EXCLUSIVE_PK=`true`);";
             auto session = tableClient.CreateSession().GetValueSync().GetSession();
             auto alterResult = session.ExecuteSchemeQuery(alterQuery).GetValueSync();
             UNIT_ASSERT_VALUES_EQUAL_C(alterResult.GetStatus(), NYdb::EStatus::SUCCESS, alterResult.GetIssues().ToString());
@@ -248,13 +259,13 @@ Y_UNIT_TEST_SUITE(KqpOlapIndexes) {
         AFL_VERIFY(csController->GetIndexesSkippingOnSelect().Val() == 0);
         AFL_VERIFY(csController->GetIndexesApprovedOnSelect().Val() == 0);
         TInstant start = Now();
-        ui32 compactionsStart = csController->GetCompactions().Val();
+        ui32 compactionsStart = csController->GetCompactionStartedCounter().Val();
         while (Now() - start < TDuration::Seconds(10)) {
-            if (compactionsStart != csController->GetCompactions().Val()) {
-                compactionsStart = csController->GetCompactions().Val();
+            if (compactionsStart != csController->GetCompactionStartedCounter().Val()) {
+                compactionsStart = csController->GetCompactionStartedCounter().Val();
                 start = Now();
             }
-            Cerr << "WAIT_COMPACTION: " << csController->GetCompactions().Val() << Endl;
+            Cerr << "WAIT_COMPACTION: " << csController->GetCompactionStartedCounter().Val() << Endl;
             Sleep(TDuration::Seconds(1));
         }
 
@@ -299,7 +310,8 @@ Y_UNIT_TEST_SUITE(KqpOlapIndexes) {
             CompareYson(result, R"([[1u;]])");
         }
 
-        AFL_VERIFY(csController->GetIndexesApprovedOnSelect().Val() < 0.20 * csController->GetIndexesSkippingOnSelect().Val());
+        AFL_VERIFY(csController->GetIndexesApprovedOnSelect().Val() < 0.20 * csController->GetIndexesSkippingOnSelect().Val())
+            ("approved", csController->GetIndexesApprovedOnSelect().Val())("skipped", csController->GetIndexesSkippingOnSelect().Val());
 
     }
 

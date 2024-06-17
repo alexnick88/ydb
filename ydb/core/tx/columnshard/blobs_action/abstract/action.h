@@ -57,7 +57,7 @@ public:
 
     void OnExecuteTxAfterAction(NColumnShard::TColumnShard& self, TBlobManagerDb& dbBlobs, const bool blobsWroteSuccessfully) {
         if (Removing) {
-            Removing->OnExecuteTxAfterRemoving(self, dbBlobs, blobsWroteSuccessfully);
+            Removing->OnExecuteTxAfterRemoving(dbBlobs, blobsWroteSuccessfully);
         }
         if (Writing) {
             Writing->OnExecuteTxAfterWrite(self, dbBlobs, blobsWroteSuccessfully);
@@ -66,7 +66,7 @@ public:
 
     void OnCompleteTxAfterAction(NColumnShard::TColumnShard& self, const bool blobsWroteSuccessfully) {
         if (Removing) {
-            Removing->OnCompleteTxAfterRemoving(self, blobsWroteSuccessfully);
+            Removing->OnCompleteTxAfterRemoving(blobsWroteSuccessfully);
         }
         if (Writing) {
             Writing->OnCompleteTxAfterWrite(self, blobsWroteSuccessfully);
@@ -143,13 +143,19 @@ public:
         return result;
     }
 
-    bool NeedDraftWritingTransaction() const {
+    [[nodiscard]] TConclusion<bool> NeedDraftWritingTransaction() const {
+        bool hasWriting = false;
         for (auto&& i : GetWritingActions()) {
             if (i->NeedDraftTransaction()) {
                 return true;
             }
+            hasWriting = true;
         }
-        return false;
+        if (hasWriting) {
+            return false;
+        } else {
+            return TConclusionStatus::Fail("has not writings");
+        }
     }
 
     void OnExecuteTxAfterAction(NColumnShard::TColumnShard& self, TBlobManagerDb& dbBlobs, const bool blobsWroteSuccessfully) {

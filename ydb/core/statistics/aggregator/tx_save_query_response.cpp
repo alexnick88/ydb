@@ -17,13 +17,8 @@ struct TStatisticsAggregator::TTxSaveQueryResponse : public TTxBase {
 
         NIceDb::TNiceDb db(txc.DB);
 
-        Self->ScanTableId.PathId = TPathId();
-        Self->PersistScanTableId(db);
-
-        for (auto& [tag, _] : Self->CountMinSketches) {
-            db.Table<Schema::Statistics>().Key(tag).Delete();
-        }
-        Self->CountMinSketches.clear();
+        Self->RescheduleScanTable(db);
+        Self->ResetScanState(db);
 
         return true;
     }
@@ -31,7 +26,11 @@ struct TStatisticsAggregator::TTxSaveQueryResponse : public TTxBase {
     void Complete(const TActorContext& ctx) override {
         SA_LOG_D("[" << Self->TabletID() << "] TTxSaveQueryResponse::Complete");
 
-        ctx.Send(Self->ReplyToActorId, new TEvStatistics::TEvScanTableResponse);
+        if (Self->ReplyToActorId) {
+            ctx.Send(Self->ReplyToActorId, new TEvStatistics::TEvScanTableResponse);
+        }
+
+        Self->ScheduleNextScan();
     }
 };
 void TStatisticsAggregator::Handle(TEvStatistics::TEvSaveStatisticsQueryResponse::TPtr&) {

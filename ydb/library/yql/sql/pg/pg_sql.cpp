@@ -282,6 +282,7 @@ public:
         ui32 ReadIndex = 0;
         TViews Views;
         TVector<TViews> CTE;
+        const TView* CurrentRecursiveView = nullptr;
         TVector<NYql::TPosition> Positions = {NYql::TPosition()};
         THashMap<TString, TString> ParamNameToPgTypeName;
         THashMap<TString, Ydb::TypedValue> AutoParamValues;
@@ -314,6 +315,8 @@ public:
                 BlockEngineEnabled = true;
             } else if (flag == "BlockEngineForce") {
                 BlockEngineForce = true;
+            } if (flag == "UnorderedResult") {
+                UnorderedResult = true;
             }
         }
 
@@ -344,7 +347,7 @@ public:
 
     void OnResult(const List* raw) {
         if (!PerStatementResult) {
-             AstParseResults[StatementId].Pool = std::make_unique<TMemoryPool>(4096);
+            AstParseResults[StatementId].Pool = std::make_unique<TMemoryPool>(4096);
             AstParseResults[StatementId].Root = ParseResult(raw);
             if (!State.AutoParamValues.empty()) {
                 AstParseResults[StatementId].PgAutoParamValues = std::move(State.AutoParamValues);
@@ -443,9 +446,12 @@ public:
                 return false;
             }
         }
+        if (StmtParseInfo) {
+            (*StmtParseInfo)[StatementId].CommandTagName = GetCommandName(node);
+        }
         switch (NodeTag(node)) {
         case T_SelectStmt:
-            return ParseSelectStmt(CAST_NODE(SelectStmt, node), false) != nullptr;
+            return ParseSelectStmt(CAST_NODE(SelectStmt, node), {.Inner = false}) != nullptr;
         case T_InsertStmt:
             return ParseInsertStmt(CAST_NODE(InsertStmt, node)) != nullptr;
         case T_UpdateStmt:
@@ -498,6 +504,10 @@ public:
             return ParseIndexStmt(CAST_NODE(IndexStmt, node)) != nullptr;
         case T_CreateSeqStmt:
             return ParseCreateSeqStmt(CAST_NODE(CreateSeqStmt, node)) != nullptr;
+        case T_AlterSeqStmt:
+            return ParseAlterSeqStmt(CAST_NODE(AlterSeqStmt, node)) != nullptr;
+        case T_AlterTableStmt:
+            return ParseAlterTableStmt(CAST_NODE(AlterTableStmt, node)) != nullptr;
         default:
             NodeNotImplemented(value, node);
             return false;
@@ -752,15 +762,20 @@ public:
     using TTraverseSelectStack = TStack<std::pair<const SelectStmt*, bool>>;
     using TTraverseNodeStack = TStack<std::pair<const Node*, bool>>;
 
+    struct TSelectStmtSettings {
+        bool Inner = true;
+        mutable TVector<TAstNode*> TargetColumns;
+        bool AllowEmptyResSet = false;
+        bool EmitPgStar = false;
+        bool FillTargetColumns = false;
+        bool UnknownsAllowed = false;
+        const TView* Recursive = nullptr;
+    };
+
     [[nodiscard]]
     TAstNode* ParseSelectStmt(
         const SelectStmt* value,
-        bool inner,
-        TVector <TAstNode*> targetColumns = {},
-        bool allowEmptyResSet = false,
-        bool emitPgStar = false,
-        bool fillTargetColumns = false,
-        bool unknownsAllowed = false
+        const TSelectStmtSettings& selectSettings
     ) {
         if (Settings.Mode == NSQLTranslation::ESqlMode::LIMITED_VIEW) {
             if (HasSelectInLimitedView) {
@@ -771,11 +786,14 @@ public:
             HasSelectInLimitedView = true;
         }
 
-        bool isValuesClauseOfInsertStmt = fillTargetColumns;
+        bool isValuesClauseOfInsertStmt = selectSettings.FillTargetColumns;
 
         State.CTE.emplace_back();
+        auto prevRecursiveView = State.CurrentRecursiveView;
+        State.CurrentRecursiveView = selectSettings.Recursive;
         Y_DEFER {
             State.CTE.pop_back();
+            State.CurrentRecursiveView = prevRecursiveView;
         };
 
         if (value->withClause) {
@@ -897,12 +915,12 @@ public:
                 auto node = ListNodeNth(x->fromClause, i);
                 if (NodeTag(node) != T_JoinExpr) {
                     auto p = ParseFromClause(node);
-                    if (!p.Source) {
+                    if (!p) {
                         return nullptr;
                     }
 
-                    AddFrom(p, fromList);
-                    joinOps.push_back(QL());
+                    AddFrom(*p, fromList);
+                    joinOps.push_back(QL(QL(QA("push"))));
                 } else {
                     TTraverseNodeStack traverseNodeStack;
                     traverseNodeStack.push({ node, false });
@@ -913,11 +931,12 @@ public:
                         if (NodeTag(top.first) != T_JoinExpr) {
                             // leaf
                             auto p = ParseFromClause(top.first);
-                            if (!p.Source) {
+                            if (!p) {
                                 return nullptr;
                             }
-                            AddFrom(p, fromList);
+                            AddFrom(*p, fromList);
                             traverseNodeStack.pop();
+                            oneJoinGroup.push_back(QL(QA("push")));
                         } else {
                             auto join = CAST_NODE(JoinExpr, top.first);
                             if (!join->larg || !join->rarg) {
@@ -936,18 +955,8 @@ public:
                             }
 
                             if (!top.second) {
-                                if (NodeTag(join->rarg) != T_JoinExpr) {
-                                    traverseNodeStack.push({ join->rarg, false });
-                                }
-                                if (NodeTag(join->larg) != T_JoinExpr) {
-                                    traverseNodeStack.push({ join->larg, false });
-                                }
-                                if (NodeTag(join->rarg) == T_JoinExpr) {
-                                    traverseNodeStack.push({ join->rarg, false });
-                                }
-                                if (NodeTag(join->larg) == T_JoinExpr) {
-                                    traverseNodeStack.push({ join->larg, false });
-                                }
+                                traverseNodeStack.push({ join->rarg, false });
+                                traverseNodeStack.push({ join->larg, false });
                                 top.second = true;
                             } else {
                                 TString op;
@@ -1098,7 +1107,7 @@ public:
                 return nullptr;
             }
 
-            if (!allowEmptyResSet && (ListLength(x->valuesLists) == 0) && (ListLength(x->targetList) == 0)) {
+            if (!selectSettings.AllowEmptyResSet && (ListLength(x->valuesLists) == 0) && (ListLength(x->targetList) == 0)) {
                 AddError("SelectStmt: both values_list and target_list are not allowed to be empty");
                 return nullptr;
             }
@@ -1126,11 +1135,11 @@ public:
 
             TVector<TAstNode*> res;
             ui32 i = 0;
-            if (emitPgStar && id + 1 == setItems.size()) {
+            if (selectSettings.EmitPgStar && id + 1 == setItems.size()) {
                 res.emplace_back(CreatePgStarResultItem());
                 i++;
             }
-            bool maybeSelectWithJustSetConfig = !inner && !sort && windowItems.empty() && !having && !groupBy && !whereFilter && !x->distinctClause  && ListLength(x->targetList) == 1;
+            bool maybeSelectWithJustSetConfig = !selectSettings.Inner && !sort && windowItems.empty() && !having && !groupBy && !whereFilter && !x->distinctClause  && ListLength(x->targetList) == 1;
             if (maybeSelectWithJustSetConfig) {
                 auto node = ListNodeNth(x->targetList, 0);
                 if (NodeTag(node) != T_ResTarget) {
@@ -1186,13 +1195,13 @@ public:
             }
 
             TVector<TAstNode*> setItemOptions;
-            if (emitPgStar) {
+            if (selectSettings.EmitPgStar) {
                 setItemOptions.push_back(QL(QA("emit_pg_star")));
             }
-            if (!targetColumns.empty()) {
-                setItemOptions.push_back(QL(QA("target_columns"), QVL(targetColumns.data(), targetColumns.size())));
+            if (!selectSettings.TargetColumns.empty()) {
+                setItemOptions.push_back(QL(QA("target_columns"), QVL(selectSettings.TargetColumns.data(), selectSettings.TargetColumns.size())));
             }
-            if (fillTargetColumns) {
+            if (selectSettings.FillTargetColumns) {
                 setItemOptions.push_back(QL(QA("fill_target_columns")));
             }
             if (ListLength(x->targetList) > 0) {
@@ -1240,7 +1249,7 @@ public:
                 setItemOptions.push_back(QL(QA("sort"), sort));
             }
 
-            if (unknownsAllowed || hasCombiningQueries) {
+            if (selectSettings.UnknownsAllowed || hasCombiningQueries) {
                 setItemOptions.push_back(QL(QA("unknowns_allowed")));
             }
 
@@ -1305,7 +1314,7 @@ public:
 
         auto output = L(A("PgSelect"), QVL(selectOptions.data(), selectOptions.size()));
 
-        if (inner) {
+        if (selectSettings.Inner) {
             return output;
         }
 
@@ -1314,7 +1323,7 @@ public:
             return State.Statements.back();
         }
 
-        auto resOptions = QL(QL(QA("type")), QL(QA("autoref")));
+        auto resOptions = BuildResultOptions(!sort);
         State.Statements.push_back(L(A("let"), A("output"), output));
         State.Statements.push_back(L(A("let"), A("result_sink"), L(A("DataSink"), QA(TString(NYql::ResultProviderName)))));
         State.Statements.push_back(L(A("let"), A("world"), L(A("Write!"),
@@ -1324,14 +1333,20 @@ public:
         return State.Statements.back();
     }
 
+    TAstNode* BuildResultOptions(bool unordered) {
+        TVector<TAstNode*> options;
+        options.push_back(QL(QA("type")));
+        options.push_back(QL(QA("autoref")));
+        if (unordered && UnorderedResult) {
+            options.push_back(QL(QA("unordered")));
+        }
+
+        return QVL(options.data(), options.size());
+    }
+
     [[nodiscard]]
     bool ParseWithClause(const WithClause* value) {
         AT_LOCATION(value);
-        if (value->recursive) {
-            AddError("WithClause: recursion is not supported");
-            return false;
-        }
-
         for (int i = 0; i < ListLength(value->ctes); ++i) {
             auto object = ListNodeNth(value->ctes, i);
             if (NodeTag(object) != T_CommonTableExpr) {
@@ -1339,7 +1354,7 @@ public:
                 return false;
             }
 
-            if (!ParseCTE(CAST_NODE(CommonTableExpr, object))) {
+            if (!ParseCTE(CAST_NODE(CommonTableExpr, object), value->recursive)) {
                 return false;
             }
         }
@@ -1348,7 +1363,7 @@ public:
     }
 
     [[nodiscard]]
-    bool ParseCTE(const CommonTableExpr* value) {
+    bool ParseCTE(const CommonTableExpr* value, bool recursive) {
         AT_LOCATION(value);
         TView view;
         view.Name = value->ctename;
@@ -1368,7 +1383,11 @@ public:
             return false;
         }
 
-        view.Source = ParseSelectStmt(CAST_NODE(SelectStmt, value->ctequery), true);
+        view.Source = ParseSelectStmt(CAST_NODE(SelectStmt, value->ctequery), {
+            .Inner = true,
+            .Recursive = recursive ? &view : nullptr
+        });
+
         if (!view.Source) {
             return false;
         }
@@ -1513,12 +1532,14 @@ public:
         const auto select = (value->selectStmt)
             ? ParseSelectStmt(
                 CAST_NODE(SelectStmt, value->selectStmt),
-                true,
-                targetColumns,
-                /*allowEmptyResSet=*/false,
-                /*emitPgStar=*/false,
-                /*fillTargetColumns=*/true,
-                /*unknownsAllowed=*/true)
+                {
+                    .Inner = true,
+                    .TargetColumns = targetColumns,
+                    .AllowEmptyResSet = false,
+                    .EmitPgStar = false,
+                    .FillTargetColumns = true,
+                    .UnknownsAllowed = true
+                })
             : L(A("Void"));
         if (!select) {
             return nullptr;
@@ -1554,12 +1575,13 @@ public:
         };
         const auto select = ParseSelectStmt(
             &selectStmt,
-            /* inner */ true,
-            /* targetColumns */{},
-            /* allowEmptyResSet */ true,
-            /*emitPgStar=*/true,
-            /*fillTargetColumns=*/false,
-            /*unknownsAllowed=*/true
+            {
+                .Inner = true, 
+                .AllowEmptyResSet = true,
+                .EmitPgStar = true,
+                .FillTargetColumns = false,
+                .UnknownsAllowed = true
+            }
         );
         if (!select) {
             return nullptr;
@@ -1657,7 +1679,7 @@ public:
         }
 
 
-        view.Source = ParseSelectStmt(CAST_NODE(SelectStmt, value->query), true);
+        view.Source = ParseSelectStmt(CAST_NODE(SelectStmt, value->query), { .Inner = true });
         if (!view.Source) {
             return nullptr;
         }
@@ -2078,6 +2100,9 @@ public:
             case OBJECT_INDEX: {
                 return ParseDropIndexStmt(value, nameListNodes);
             }
+            case OBJECT_SEQUENCE: {
+                return ParseDropSequenceStmt(value, nameListNodes);
+            }
             default: {
                 AddError("Not supported object type for DROP");
                 return nullptr;
@@ -2194,6 +2219,46 @@ public:
         return State.Statements.back();
     }
 
+    TAstNode* ParseDropSequenceStmt(const DropStmt* value, const TVector<const List*>& names) {
+        if (value->behavior == DROP_CASCADE) {
+            AddError("CASCADE is not implemented");
+            return nullptr;
+        }
+
+        if (names.size() != 1) {
+            AddError("DROP SEQUENCE requires exactly one sequence");
+            return nullptr;
+        }
+
+        for (const auto& nameList : names) {
+            const auto [clusterName, indexName] = getSchemaAndObjectName(nameList);
+            const auto [sink, key] = ParseQualifiedPgObjectName(
+                /* catalogName */ "",
+                clusterName,
+                indexName,
+                "pgSequence"
+            );
+
+            TString mode = (value->missing_ok) ? "drop_if_exists" : "drop";
+            State.Statements.push_back(L(
+                A("let"),
+                A("world"),
+                L(
+                    A("Write!"),
+                    A("world"),
+                    sink,
+                    key,
+                    L(A("Void")),
+                    QL(
+                        QL(QA("mode"), QA(mode))
+                    )
+                )
+            ));
+        }
+
+        return State.Statements.back();
+    }
+
     [[nodiscard]]
     TAstNode* ParseVariableSetStmt(const VariableSetStmt* value, bool isSetConfig = false) {
         if (value->kind != VAR_SET_VALUE) {
@@ -2251,7 +2316,7 @@ public:
             }
         }
 
-        if (name == "useblocks" || name == "emitaggapply") {
+        if (name == "useblocks" || name == "emitaggapply" || name == "unorderedresult") {
             if (ListLength(value->args) != 1) {
                 AddError(TStringBuilder() << "VariableSetStmt, expected 1 arg, but got: " << ListLength(value->args));
                 return nullptr;
@@ -2260,9 +2325,13 @@ public:
             auto arg = ListNodeNth(value->args, 0);
             if (NodeTag(arg) == T_A_Const && (NodeTag(CAST_NODE(A_Const, arg)->val) == T_String)) {
                 TString rawStr = StrVal(CAST_NODE(A_Const, arg)->val);
-                auto configSource = L(A("DataSource"), QA(TString(NYql::ConfigProviderName)));
-                State.Statements.push_back(L(A("let"), A("world"), L(A(TString(NYql::ConfigureName)), A("world"), configSource,
-                    QA(TString(rawStr == "true" ? "" : "Disable") + TString((name == "useblocks") ? "UseBlocks" : "PgEmitAggApply")))));
+                if (name == "unorderedresult") {
+                    UnorderedResult = (rawStr == "true");
+                } else {
+                    auto configSource = L(A("DataSource"), QA(TString(NYql::ConfigProviderName)));
+                    State.Statements.push_back(L(A("let"), A("world"), L(A(TString(NYql::ConfigureName)), A("world"), configSource,
+                        QA(TString(rawStr == "true" ? "" : "Disable") + TString((name == "useblocks") ? "UseBlocks" : "PgEmitAggApply")))));
+                }
             } else {
                 AddError(TStringBuilder() << "VariableSetStmt, expected string literal for " << value->name << " option");
                 return nullptr;
@@ -2413,10 +2482,10 @@ public:
 
         TVector<TAstNode*> fromList;
         auto p = ParseRangeVar(value->relation);
-        if (!p.Source) {
+        if (!p) {
             return nullptr;
         }
-        AddFrom(p, fromList);
+        AddFrom(*p, fromList);
 
         TAstNode* whereFilter = nullptr;
         if (value->whereClause) {
@@ -2434,7 +2503,7 @@ public:
 
         setItemOptions.push_back(QL(QA("result"), QVL(CreatePgStarResultItem())));
         setItemOptions.push_back(QL(QA("from"), QVL(fromList.data(), fromList.size())));
-        setItemOptions.push_back(QL(QA("join_ops"), QVL(QL())));
+        setItemOptions.push_back(QL(QA("join_ops"), QVL(QL(QL(QA("push"))))));
 
         NYql::TAstNode* lambda = nullptr;
         if (whereFilter) {
@@ -2546,7 +2615,7 @@ public:
         State.Statements.push_back(L(A("let"), A("output"), output));
         State.Statements.push_back(L(A("let"), A("result_sink"), L(A("DataSink"), QA(TString(NYql::ResultProviderName)))));
 
-        const auto resOptions = QL(QL(QA("type")), QL(QA("autoref")));
+        const auto resOptions = BuildResultOptions(true);
         State.Statements.push_back(L(A("let"), A("world"), L(A("Write!"),
             A("world"), A("result_sink"), L(A("Key")), A("output"), resOptions)));
         State.Statements.push_back(L(A("let"), A("world"), L(A("Commit!"),
@@ -2745,7 +2814,152 @@ public:
         return State.Statements.back();
     }
 
-    TFromDesc ParseFromClause(const Node* node) {
+    [[nodiscard]]
+    TAstNode* ParseAlterSeqStmt(const AlterSeqStmt* value) {
+
+        std::vector<TAstNode*> options;
+        TString mode = (value->missing_ok) ? "alter_if_exists" : "alter";
+
+        options.push_back(QL(QA("mode"), QA(mode)));
+
+        auto [sink, key] = ParseQualifiedPgObjectName(
+            value->sequence->catalogname,
+            value->sequence->schemaname,
+            value->sequence->relname,
+            "pgSequence"
+        );
+
+        if (!sink || !key) {
+            return nullptr;
+        }
+
+        for (int i = 0; i < ListLength(value->options); ++i) {
+            auto rawNode = ListNodeNth(value->options, i);
+
+            switch (NodeTag(rawNode)) {
+                case T_DefElem: {
+                    const auto* defElem = CAST_NODE(DefElem, rawNode);
+                    TString nameElem = defElem->defname;
+                    if (defElem->arg) {
+                        switch (NodeTag(defElem->arg))
+                        {
+                            case T_Integer:
+                                options.emplace_back(QL(QAX(nameElem), QA(ToString(intVal(defElem->arg)))));
+                                break;
+                            case T_Float:
+                                options.emplace_back(QL(QAX(nameElem), QA(strVal(defElem->arg))));
+                                break;
+                            case T_TypeName: {
+                                const auto* typeName = CAST_NODE_EXT(PG_TypeName, T_TypeName, defElem->arg);
+                                if (ListLength(typeName->names) > 0) {
+                                    options.emplace_back(QL(QAX(nameElem),
+                                        QAX(StrVal(ListNodeNth(typeName->names, ListLength(typeName->names) - 1)))));
+                                    }
+                                break;
+                            }
+                            default:
+                                NodeNotImplemented(defElem->arg);
+                                return nullptr;
+                        }
+                    }
+                    break;
+                }
+                default:
+                    NodeNotImplemented(rawNode);
+                    return nullptr;
+            }
+        }
+
+        if (value->for_identity) {
+            options.push_back(QL(QA("for_identity")));
+        }
+
+        State.Statements.push_back(
+                L(A("let"), A("world"),
+                  L(A("Write!"), A("world"), sink, key, L(A("Void")),
+                    QVL(options.data(), options.size()))));
+
+        return State.Statements.back();
+    }
+
+    [[nodiscard]] 
+    TAstNode* ParseAlterTableStmt(const AlterTableStmt* value) {
+        std::vector<TAstNode*> options;
+        TString mode = (value->missing_ok) ? "alter_if_exists" : "alter";
+
+        options.push_back(QL(QA("mode"), QA(mode)));
+
+        const auto [sink, key] = ParseWriteRangeVar(value->relation, true);
+        if (!sink || !key) {
+            return nullptr;
+        }
+
+        std::vector<TAstNode*> alterColumns;
+        for (int i = 0; i < ListLength(value->cmds); ++i) {
+            auto rawNode = ListNodeNth(value->cmds, i);
+
+            const auto* cmd = CAST_NODE(AlterTableCmd, rawNode);
+            switch (cmd->subtype) {
+                case AT_ColumnDefault: { /* ALTER COLUMN DEFAULT */
+                    const auto* def = cmd->def;
+                    const auto* colName = cmd->name;
+                    switch (NodeTag(def)) {
+                        case T_FuncCall: {
+                            const auto* newDefault = CAST_NODE(FuncCall, def);
+                            const auto* funcName = ListNodeNth(newDefault->funcname, 0);
+                            if (NodeTag(funcName) != T_String) {
+                                NodeNotImplemented(newDefault, funcName);
+                                return nullptr;
+                            }
+                            auto strFuncName = StrVal(funcName);
+                            if (strcmp(strFuncName, "nextval") != 0) {
+                                NodeNotImplemented(newDefault, funcName);
+                                return nullptr;
+                            }
+                            const auto* rawArg = ListNodeNth(newDefault->args, 0);
+                            if (NodeTag(rawArg) != T_A_Const) {
+                                NodeNotImplemented(newDefault, rawArg);
+                                return nullptr;
+                            }
+                            const auto* arg = CAST_NODE(A_Const, rawArg);
+                            if (NodeTag(arg->val) != T_String) {
+                                ValueNotImplemented(newDefault, arg->val);
+                                return nullptr;
+                            }
+                            auto seqName = StrVal(arg->val);
+
+                            alterColumns.push_back(QL(QAX(colName), QL(QA("setDefault"), QL(QA("nextval"), QA(seqName)))));
+                            break;
+                        }
+                        default:
+                            NodeNotImplemented(def);
+                            return nullptr;
+                    }
+			        break;
+                }
+                default:
+                    NodeNotImplemented(rawNode);
+                    return nullptr;
+            }
+        }
+
+        std::vector<TAstNode*> actions { QL(QA("alterColumns"), QVL(alterColumns.data(), alterColumns.size())) };
+
+        options.push_back(
+            QL(QA("actions"), 
+               QVL(actions.data(), actions.size())
+            )
+        );
+
+        State.Statements.push_back(
+                L(A("let"), A("world"),
+                  L(A("Write!"), A("world"), sink, key, L(A("Void")),
+                    QVL(options.data(), options.size()))));
+
+        return State.Statements.back();
+    }
+
+    TMaybe<TFromDesc> ParseFromClause(const Node* node) {
         switch (NodeTag(node)) {
         case T_RangeVar:
             return ParseRangeVar(CAST_NODE(RangeVar, node));
@@ -2774,7 +2988,12 @@ public:
             fromList.push_back(QL(L(A("Right!"), A(label)), aliasNode, colNamesTuple));
             ++State.ReadIndex;
         } else {
-            fromList.push_back(QL(p.Source, aliasNode, colNamesTuple));
+            auto source = p.Source;
+            if (!source) {
+                source = L(A("PgSelf"));
+            }
+
+            fromList.push_back(QL(source, aliasNode, colNamesTuple));
         }
     }
 
@@ -2859,8 +3078,10 @@ public:
 
 
     TAstNode* BuildPgObjectExpression(const TStringBuf objectName, const TStringBuf objectType) {
+        bool noPrefix = (objectType == "pgIndex");
+        TString name = noPrefix ? TString(objectName) : TablePathPrefix + TString(objectName);
         return L(A("Key"), QL(QA("pgObject"),
-                              L(A("String"), QA(objectName)),
+                              L(A("String"), QAX(std::move(name))),
                               L(A("String"), QA(objectType))
                               ));
     }
@@ -2896,7 +3117,7 @@ public:
                                         /* isSink */ true, isScheme);
     }
 
-    TFromDesc ParseRangeVar(const RangeVar* value) {
+    TMaybe<TFromDesc> ParseRangeVar(const RangeVar* value) {
         AT_LOCATION(value);
 
         const TView* view = nullptr;
@@ -2908,6 +3129,10 @@ public:
                     break;
                 }
             }
+            if (!view && State.CurrentRecursiveView && State.CurrentRecursiveView->Name == value->relname) {
+                view = State.CurrentRecursiveView;
+            }
+
             if (!view) {
                 auto viewIt = State.Views.find(value->relname);
                 if (viewIt != State.Views.end()) {
@@ -2927,7 +3152,7 @@ public:
         }
 
         if (view) {
-            return { view->Source, alias, colnames.empty() ? view->ColNames : colnames, false };
+            return TFromDesc{view->Source, alias, colnames.empty() ? view->ColNames : colnames, false };
         }
 
         TString schemaname = value->schemaname;
@@ -2953,7 +3178,7 @@ public:
                 if (!s) {
                     return {};
                 }
-                return { s, alias, colnames, true };
+                return TFromDesc{ s, alias, colnames, true };
             }
         }
 
@@ -2973,7 +3198,7 @@ public:
             L(A("Void")),
             QL()
         );
-        return {
+        return TFromDesc {
             readExpr,
             alias,
             colnames,
@@ -3033,7 +3258,7 @@ public:
                 );
     }
 
-    TFromDesc ParseRangeFunction(const RangeFunction* value) {
+    TMaybe<TFromDesc> ParseRangeFunction(const RangeFunction* value) {
         if (value->lateral) {
             AddError("RangeFunction: unsupported lateral");
             return {};
@@ -3094,10 +3319,10 @@ public:
             return {};
         }
 
-        return { func, alias, colnames, false };
+        return TFromDesc{ func, alias, colnames, false };
     }
 
-    TFromDesc ParseRangeSubselect(const RangeSubselect* value) {
+    TMaybe<TFromDesc> ParseRangeSubselect(const RangeSubselect* value) {
         if (value->lateral) {
             AddError("RangeSubselect: unsupported lateral");
             return {};
@@ -3124,7 +3349,7 @@ public:
             return {};
         }
 
-        return { ParseSelectStmt(CAST_NODE(SelectStmt, value->subquery), true), alias, colnames, false };
+        return TFromDesc{ ParseSelectStmt(CAST_NODE(SelectStmt, value->subquery), { .Inner = true }), alias, colnames, false };
     }
 
     TAstNode* ParseNullTestExpr(const NullTest* value, const TExprSettings& settings) {
@@ -3258,8 +3483,14 @@ public:
         case SVFOP_CURRENT_ROLE:
         case SVFOP_USER:
             return L(A("PgConst"), QA("postgres"), L(A("PgType"), QA("name")));
-        case SVFOP_CURRENT_CATALOG:
-            return L(A("PgConst"), QA("postgres"), L(A("PgType"), QA("name")));
+        case SVFOP_CURRENT_CATALOG: {
+            std::optional<TString> database;
+            if (Settings.GUCSettings) {
+                database = Settings.GUCSettings->Get("ydb_database");
+            }
+
+            return L(A("PgConst"), QA(database ? *database : "postgres"), L(A("PgType"), QA("name")));
+        }
         case SVFOP_CURRENT_SCHEMA: {
             std::optional<TString> searchPath;
             if (Settings.GUCSettings) {
@@ -3670,7 +3901,7 @@ public:
             rowTest = L(A("Void"));
         }
 
-        auto select = ParseSelectStmt(CAST_NODE(SelectStmt, value->subselect), true);
+        auto select = ParseSelectStmt(CAST_NODE(SelectStmt, value->subselect), {.Inner = true});
         if (!select) {
             return nullptr;
         }
@@ -4538,18 +4769,21 @@ public:
         }
 
         auto lst = CAST_NODE(List, value->rexpr);
-        TVector<TAstNode*> listItems;
-        listItems.push_back(A("AsList"));
+
+        TVector<TAstNode*> children;
+        children.reserve(2 + ListLength(lst));
+
+        children.push_back(A("PgIn"));
+        children.push_back(lhs);
         for (int item = 0; item < ListLength(lst); ++item) {
             auto cell = ParseExpr(ListNodeNth(lst, item), settings);
             if (!cell) {
                 return nullptr;
             }
-
-            listItems.push_back(cell);
+            children.push_back(cell);
         }
 
-        auto ret = L(A("PgIn"), lhs, VL(listItems.data(), listItems.size()));
+        auto ret = VL(children.data(), children.size());
         if (op[0] == '<') {
             ret = L(A("PgNot"), ret);
         }
@@ -4849,6 +5083,7 @@ private:
     bool DqEngineForce = false;
     bool BlockEngineEnabled = false;
     bool BlockEngineForce = false;
+    bool UnorderedResult = false;
     TString TablePathPrefix;
     TVector<ui32> RowStarts;
     ui32 QuerySize;

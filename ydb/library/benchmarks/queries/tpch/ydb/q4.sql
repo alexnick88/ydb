@@ -11,8 +11,8 @@ select
 from
     `{path}orders`
 where
-    CAST(o_orderdate AS Timestamp) >= $border
-    and CAST(o_orderdate AS Timestamp) < DateTime::MakeDate(DateTime::ShiftMonths($border, 3))
+    o_orderdate >= $border
+    and o_orderdate < DateTime::MakeDate(DateTime::ShiftMonths($border, 3))
 );
 
 $l = (
@@ -25,7 +25,7 @@ where
 );
 
 select
-    o.o_orderpriority,
+    o.o_orderpriority as o_orderpriority,
     count(*) as order_count
 from
     $o as o
@@ -36,4 +36,4 @@ on
 group by
     o.o_orderpriority
 order by
-    o.o_orderpriority;
+    o_orderpriority;

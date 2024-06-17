@@ -617,6 +617,8 @@ void TSolomonExporter::DoHandleShard(
 {
     TPromise<TSharedRef> responsePromise = NewPromise<TSharedRef>();
 
+    auto Logger = NProfiling::Logger().WithTag("Shard: %v", name);
+
     try {
         auto format = NMonitoring::EFormat::JSON;
         if (auto accept = req->GetHeaders()->Find("Accept")) {
@@ -950,8 +952,8 @@ TErrorOr<TReadWindow> TSolomonExporter::SelectReadWindow(
         int index = Registry_->IndexOf(iteration / gridFactor);
         if (time >= now - period && time < now) {
             if (readWindow.empty() ||
-                readWindow.back().first.size() >= static_cast<size_t>(gridSubsample)
-            ) {
+                readWindow.back().first.size() >= static_cast<size_t>(gridSubsample))
+            {
                 readWindow.emplace_back(std::vector<int>{index}, time);
             } else {
                 readWindow.back().first.push_back(index);
@@ -1031,7 +1033,7 @@ TSharedRef TSolomonExporter::DumpSensors()
     Registry_->ProcessRegistrations();
     Registry_->Collect(OffloadThreadPool_->GetInvoker());
 
-    return SerializeProtoToRef(Registry_->DumpSensors());
+    return SerializeProtoToRef(Registry_->DumpSensors(Config_->Host, Config_->InstanceTags));
 }
 
 void TSolomonExporter::AttachRemoteProcess(TCallback<TFuture<TSharedRef>()> dumpSensors)

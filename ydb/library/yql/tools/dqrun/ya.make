@@ -25,6 +25,7 @@ ENDIF()
         library/cpp/logger
         library/cpp/resource
         library/cpp/yson
+        library/cpp/digest/md5
         yt/cpp/mapreduce/interface
         ydb/library/yql/sql/pg
         ydb/library/yql/core/facade
@@ -33,6 +34,7 @@ ENDIF()
         ydb/library/yql/core/file_storage/http_download
         ydb/library/yql/core/services
         ydb/library/yql/core/services/mounts
+        ydb/library/yql/dq/actors/input_transforms
         ydb/library/yql/dq/comp_nodes
         ydb/library/yql/dq/actors/input_transforms
         ydb/library/yql/dq/integration/transform
@@ -69,6 +71,7 @@ ENDIF()
         ydb/library/yql/utils/failure_injector
         ydb/library/yql/core/url_preprocessing
         ydb/library/yql/core/url_lister
+        ydb/library/yql/providers/yt/actors
         ydb/library/yql/providers/yt/comp_nodes/dq
         ydb/library/yql/providers/yt/dq_task_preprocessor
         ydb/library/yql/providers/yt/gateway/file
@@ -83,6 +86,7 @@ ENDIF()
         ydb/library/yql/providers/yt/lib/config_clusters
         ydb/library/yql/parser/pg_wrapper
         ydb/library/yql/utils/log/proto
+        ydb/library/yql/core/qplayer/storage/file
 
         ydb/library/yql/utils/actor_system
         ydb/core/fq/libs/actors

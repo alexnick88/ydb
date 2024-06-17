@@ -27,7 +27,7 @@ struct TPipeReaderToWriterOptions
     i64 BufferDataWeight = 16_MB;
     bool ValidateValues = false;
     NConcurrency::IThroughputThrottlerPtr Throttler;
-    std::function<TError(const TError& readerError)> ReaderErrorWrapper;
+    std::function<TError(TError readerError)> ReaderErrorWrapper;
     // Used only for testing.
     TDuration PipeDelay;
 };
@@ -53,6 +53,10 @@ void PipeInputToOutput(
     const NConcurrency::IAsyncInputStreamPtr& input,
     IOutputStream* output,
     i64 bufferBlockSize);
+
+void PipeInputToOutput(
+    const NConcurrency::IAsyncZeroCopyInputStreamPtr& input,
+    IOutputStream* output);
 
 ////////////////////////////////////////////////////////////////////////////////
 

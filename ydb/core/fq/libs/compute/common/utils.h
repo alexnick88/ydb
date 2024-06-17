@@ -54,7 +54,8 @@ TPublicStat GetPublicStat(const TString& statistics);
 struct IPlanStatProcessor {
     virtual ~IPlanStatProcessor() = default;
     virtual Ydb::Query::StatsMode GetStatsMode() = 0;
-    virtual TString ConvertPlan(const TString& plan)  = 0;
+    virtual TString ConvertPlan(const TString& plan) = 0;
+    virtual TString GetPlanVisualization(const TString& plan) = 0;
     virtual TString GetQueryStat(const TString& plan, double& cpuUsage) = 0;
     virtual TPublicStat GetPublicStat(const TString& stat) = 0;
     virtual THashMap<TString, i64> GetFlatStat(TStringBuf plan) = 0;
@@ -72,7 +73,7 @@ public:
         std::optional<NYql::NDqProto::StatusIds::StatusCode> pendingStatusCode = std::nullopt
     );
     Fq::Private::PingTaskRequest Build(const Ydb::TableStats::QueryStats& queryStats);
-    Fq::Private::PingTaskRequest Build(const TString& queryPlan, const TString& queryAst);
+    Fq::Private::PingTaskRequest Build(const TString& queryPlan, const TString& queryAst, int64_t compilationTimeUs, int64_t computeTimeUs);
     NYql::TIssues Issues;
     double CpuUsage = 0.0;
     TPublicStat PublicStat;

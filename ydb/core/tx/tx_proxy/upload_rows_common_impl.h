@@ -4,7 +4,6 @@
 
 #include <ydb/core/tx/long_tx_service/public/events.h>
 #include <ydb/core/grpc_services/local_rpc/local_rpc.h>
-#include <ydb/core/grpc_services/rpc_long_tx.h>
 #include <ydb/core/formats/arrow/arrow_batch_builder.h>
 #include <ydb/core/formats/arrow/converter.h>
 #include <ydb/core/io_formats/arrow/csv_arrow.h>
@@ -100,8 +99,8 @@ public:
         }
         RowCost += TUpsertCost::OneRowCost(sz);
 
-        TConstArrayRef<TCell> keyCells(&cells[0], KeySize);
-        TConstArrayRef<TCell> valueCells(&cells[KeySize], cells.size() - KeySize);
+        TConstArrayRef<TCell> keyCells = cells.first(KeySize);
+        TConstArrayRef<TCell> valueCells = cells.subspan(KeySize);
 
         TSerializedCellVec serializedKey(keyCells);
         Rows.emplace_back(std::move(serializedKey), TSerializedCellVec::Serialize(valueCells));
@@ -120,6 +119,12 @@ private:
 }
 
 namespace NTxProxy {
+
+TActorId DoLongTxWriteSameMailbox(const TActorContext& ctx, const TActorId& replyTo,
+    const NLongTxService::TLongTxId& longTxId, const TString& dedupId,
+    const TString& databaseName, const TString& path,
+    std::shared_ptr<const NSchemeCache::TSchemeCacheNavigate> navigateResult,
+    std::shared_ptr<arrow::RecordBatch> batch, std::shared_ptr<NYql::TIssues> issues);
 
 template <NKikimrServices::TActivity::EType DerivedActivityType>
 class TUploadRowsBase : public TActorBootstrapped<TUploadRowsBase<DerivedActivityType>> {
@@ -208,7 +213,7 @@ public:
     explicit TUploadRowsBase(TDuration timeout = TDuration::Max(), bool diskQuotaExceeded = false, NWilson::TSpan span = {})
         : TBase()
         , SchemeCache(MakeSchemeCacheID())
-        , LeaderPipeCache(MakePipePeNodeCacheID(false))
+        , LeaderPipeCache(MakePipePerNodeCacheID(false))
         , Timeout((timeout && timeout <= DEFAULT_TIMEOUT) ? timeout : DEFAULT_TIMEOUT)
         , Status(Ydb::StatusIds::SUCCESS)
         , DiskQuotaExceeded(diskQuotaExceeded)
@@ -855,7 +860,7 @@ private:
         TBase::Become(&TThis::StateWaitWriteBatchResult);
         ui32 batchNo = 0;
         TString dedupId = ToString(batchNo);
-        NGRpcService::DoLongTxWriteSameMailbox(ctx, ctx.SelfID, LongTxId, dedupId,
+        DoLongTxWriteSameMailbox(ctx, ctx.SelfID, LongTxId, dedupId,
             GetDatabase(), GetTable(), ResolveNamesResult, Batch, Issues);
     }
 

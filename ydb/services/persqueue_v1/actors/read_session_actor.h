@@ -243,6 +243,7 @@ private:
             HFunc(TEvPQProxy::TEvCommitDone, Handle); // from PartitionActor
             HFunc(TEvPQProxy::TEvPartitionStatus, Handle); // from partitionActor
             HFunc(TEvPQProxy::TEvUpdateSession, Handle); // from partitionActor
+            HFunc(TEvPQProxy::TEvReadingStarted, Handle); // from partitionActor
             HFunc(TEvPQProxy::TEvReadingFinished, Handle); // from partitionActor
 
 
@@ -295,6 +296,7 @@ private:
     void Handle(TEvPQProxy::TEvCommitDone::TPtr& ev, const TActorContext& ctx);
     void Handle(TEvPQProxy::TEvPartitionStatus::TPtr& ev, const TActorContext& ctx);
     void Handle(TEvPQProxy::TEvUpdateSession::TPtr& ev, const TActorContext& ctx);
+    void Handle(TEvPQProxy::TEvReadingStarted::TPtr& ev, const TActorContext& ctx);
     void Handle(TEvPQProxy::TEvReadingFinished::TPtr& ev, const TActorContext& ctx);
 
     // Balancer events
@@ -317,7 +319,7 @@ private:
     void InitSession(const TActorContext& ctx);
     void RegisterSession(const TString& topic, const TActorId& pipe, const TVector<ui32>& groups, const TActorContext& ctx);
     void CloseSession(PersQueue::ErrorCode::ErrorCode code, const TString& reason, const TActorContext& ctx);
-    void SendLockPartitionToSelf(ui32 group, TString topicName, TTopicHolder topic, const TActorContext& ctx);
+    void SendLockPartitionToSelf(ui32 partitionId, TString topicName, TTopicHolder topic, const TActorContext& ctx);
 
     void SetupCounters();
     void SetupTopicCounters(const NPersQueue::TTopicConverterPtr& topic);
@@ -449,6 +451,7 @@ private:
     NPersQueue::TTopicsToConverter TopicsList;
 
     bool DirectRead;
+    bool AutoscalingSupport;
 };
 
 }

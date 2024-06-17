@@ -30,7 +30,7 @@ namespace NKikimr::NPQ {
 static const ui32 MAX_USER_ACTS = 1000;
 
 void TPartition::SendReadingFinished(const TString& consumer) {
-    Send(Tablet, new TEvPQ::TEvReadingPartitionStatusRequest(consumer, Partition.OriginalPartitionId));
+    Send(Tablet, new TEvPQ::TEvReadingPartitionStatusRequest(consumer, Partition.OriginalPartitionId, TabletGeneration, ++PQRBCookie));
 }
 
 void TPartition::FillReadFromTimestamps(const TActorContext& ctx) {
@@ -99,6 +99,20 @@ TAutoPtr<TEvPersQueue::TEvHasDataInfoResponse> TPartition::MakeHasDataInfoRespon
         res->Record.SetCookie(*cookie);
     }
     res->Record.SetReadingFinished(readingFinished);
+    if (readingFinished) {
+        ui32 partitionId = Partition.OriginalPartitionId;
+
+        auto* node = PartitionGraph.GetPartition(partitionId);
+        for (auto* child : node->Children) {
+            res->Record.AddChildPartitionIds(child->Id);
+
+            for (auto* p : child->Parents) {
+                if (p->Id != partitionId) {
+                    res->Record.AddAdjacentPartitionIds(p->Id);
+                }
+            }
+        }
+    }
 
     return res;
 }

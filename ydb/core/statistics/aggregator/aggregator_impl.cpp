@@ -407,6 +407,10 @@ void TStatisticsAggregator::Handle(TEvStatistics::TEvStatTableCreationResponse::
         PendingSaveStatistics = false;
         SaveStatisticsToTable();
     }
+    if (PendingDeleteStatistics) {
+        PendingDeleteStatistics = false;
+        DeleteStatisticsFromTable();
+    }
 }
 
 void TStatisticsAggregator::Initialize() {
@@ -451,7 +455,7 @@ void TStatisticsAggregator::NextRange() {
     record.MutableTableId()->SetTableId(ScanTableId.PathId.LocalPathId);
     record.SetStartKey(StartKey.GetBuffer());
 
-    Send(MakePipePeNodeCacheID(false),
+    Send(MakePipePerNodeCacheID(false),
         new TEvPipeCache::TEvForward(request.release(), range.DataShardId, true),
         IEventHandle::FlagTrackDelivery);
 }
@@ -484,6 +488,42 @@ void TStatisticsAggregator::SaveStatisticsToTable() {
         std::move(columnNames), std::move(data)));
 }
 
+void TStatisticsAggregator::DeleteStatisticsFromTable() {
+    if (!IsStatisticsTableCreated) {
+        PendingDeleteStatistics = true;
+        return;
+    }
+
+    PendingDeleteStatistics = false;
+
+    Register(CreateDeleteStatisticsQuery(ScanTableId.PathId));
+}
+
+void TStatisticsAggregator::ScheduleNextScan() {
+    while (!ScanTablesByTime.empty()) {
+        auto& topTable = ScanTablesByTime.top();
+        auto schemeShardScanTables = ScanTablesBySchemeShard[topTable.SchemeShardId];
+        if (schemeShardScanTables.find(topTable.PathId) != schemeShardScanTables.end()) {
+            break;
+        }
+        ScanTablesByTime.pop();
+    }
+    if (ScanTablesByTime.empty()) {
+        return;
+    }
+
+    auto& topTable = ScanTablesByTime.top();
+    auto now = TInstant::Now();
+    auto updateTime = topTable.LastUpdateTime;
+    auto diff = now - updateTime;
+    if (diff >= ScanIntervalTime) {
+        Send(SelfId(), new TEvPrivate::TEvScheduleScan);
+    } else {
+        TInstant deadline = now + ScanIntervalTime - diff;
+        Schedule(deadline, new TEvPrivate::TEvScheduleScan);
+    }
+}
+
 void TStatisticsAggregator::PersistSysParam(NIceDb::TNiceDb& db, ui64 id, const TString& value) {
     db.Table<Schema::SysParams>().Key(id).Update(
         NIceDb::TUpdate<Schema::SysParams::Value>(value));
@@ -492,6 +532,82 @@ void TStatisticsAggregator::PersistSysParam(NIceDb::TNiceDb& db, ui64 id, const 
 void TStatisticsAggregator::PersistScanTableId(NIceDb::TNiceDb& db) {
     PersistSysParam(db, Schema::SysParam_ScanTableOwnerId, ToString(ScanTableId.PathId.OwnerId));
     PersistSysParam(db, Schema::SysParam_ScanTableLocalPathId, ToString(ScanTableId.PathId.LocalPathId));
+}
+
+void TStatisticsAggregator::PersistScanStartTime(NIceDb::TNiceDb& db) {
+    PersistSysParam(db, Schema::SysParam_ScanStartTime, ToString(ScanStartTime.MicroSeconds()));
+}
+
+void TStatisticsAggregator::ResetScanState(NIceDb::TNiceDb& db) {
+    ScanTableId.PathId = TPathId();
+    PersistScanTableId(db);
+
+    for (auto& [tag, _] : CountMinSketches) {
+        db.Table<Schema::Statistics>().Key(tag).Delete();
+    }
+    CountMinSketches.clear();
+
+    ShardRanges.clear();
+
+    KeyColumnTypes.clear();
+    Columns.clear();
+    ColumnNames.clear();
+}
+
+void TStatisticsAggregator::RescheduleScanTable(NIceDb::TNiceDb& db) {
+    if (ScanTablesByTime.empty()) {
+        return;
+    }
+    auto& topTable = ScanTablesByTime.top();
+    auto pathId = topTable.PathId;
+    if (pathId == ScanTableId.PathId) {
+        TScanTable scanTable;
+        scanTable.PathId = pathId;
+        scanTable.SchemeShardId = topTable.SchemeShardId;
+        scanTable.LastUpdateTime = ScanStartTime;
+
+        ScanTablesByTime.pop();
+        ScanTablesByTime.push(scanTable);
+
+        db.Table<Schema::ScanTables>().Key(pathId.OwnerId, pathId.LocalPathId).Update(
+            NIceDb::TUpdate<Schema::ScanTables::LastUpdateTime>(ScanStartTime.MicroSeconds()));
+    }
+}
+
+void TStatisticsAggregator::DropScanTable(NIceDb::TNiceDb& db) {
+    if (ScanTablesByTime.empty()) {
+        return;
+    }
+    auto& topTable = ScanTablesByTime.top();
+    auto pathId = topTable.PathId;
+    if (pathId == ScanTableId.PathId) {
+        ScanTablesByTime.pop();
+        db.Table<Schema::ScanTables>().Key(pathId.OwnerId, pathId.LocalPathId).Delete();
+    }
+}
+
+template <typename T, typename S>
+void PrintContainerStart(const T& container, size_t count, TStringStream& str,
+    std::function<S(const typename T::value_type&)> extractor)
+{
+    if (container.empty()) {
+        return;
+    }
+    str << "    ";
+    size_t i = 0;
+    for (const auto& entry : container) {
+        if (i) {
+            str << ", ";
+        }
+        str << extractor(entry);
+        if (++i == count) {
+            break;
+        }
+    }
+    if (container.size() > count) {
+        str << " ...";
+    }
+    str << Endl;
 }
 
 bool TStatisticsAggregator::OnRenderAppHtmlPage(NMon::TEvRemoteHttpInfo::TPtr ev,
@@ -506,6 +622,69 @@ bool TStatisticsAggregator::OnRenderAppHtmlPage(NMon::TEvRemoteHttpInfo::TPtr ev
         PRE() {
             str << "---- StatisticsAggregator ----" << Endl << Endl;
             str << "Database: " << Database << Endl;
+            str << "BaseStats: " << BaseStats.size() << Endl;
+            str << "SchemeShards: " << SchemeShards.size() << Endl;
+            {
+                std::function<TSSId(const std::pair<const TSSId, size_t>&)> extr =
+                    [](const auto& x) { return x.first; };
+                PrintContainerStart(SchemeShards, 4, str, extr);
+            }
+            str << "Nodes: " << Nodes.size() << Endl;
+            {
+                std::function<TNodeId(const std::pair<const TNodeId, size_t>&)> extr =
+                    [](const auto& x) { return x.first; };
+                PrintContainerStart(Nodes, 8, str, extr);
+            }
+            str << "RequestedSchemeShards: " << RequestedSchemeShards.size() << Endl;
+            {
+                std::function<TSSId(const TSSId&)> extr = [](const auto& x) { return x; };
+                PrintContainerStart(RequestedSchemeShards, 4, str, extr);
+            }
+            str << "FastCounter: " << FastCounter << Endl;
+            str << "FastCheckInFlight: " << FastCheckInFlight << Endl;
+            str << "FastSchemeShards: " << FastSchemeShards.size() << Endl;
+            {
+                std::function<TSSId(const TSSId&)> extr = [](const auto& x) { return x; };
+                PrintContainerStart(FastSchemeShards, 4, str, extr);
+            }
+            str << "FastNodes: " << FastNodes.size() << Endl;
+            {
+                std::function<TNodeId(const TNodeId&)> extr = [](const auto& x) { return x; };
+                PrintContainerStart(FastNodes, 8, str, extr);
+            }
+            str << "PropagationInFlight: " << PropagationInFlight << Endl;
+            str << "PropagationSchemeShards: " << PropagationSchemeShards.size() << Endl;
+            {
+                std::function<TSSId(const TSSId&)> extr = [](const auto& x) { return x; };
+                PrintContainerStart(PropagationSchemeShards, 4, str, extr);
+            }
+            str << "PropagationNodes: " << PropagationNodes.size() << Endl;
+            {
+                std::function<TNodeId(const TNodeId&)> extr = [](const auto& x) { return x; };
+                PrintContainerStart(FastNodes, 8, str, extr);
+            }
+            str << "LastSSIndex: " << LastSSIndex << Endl;
+            str << "PendingRequests: " << PendingRequests.size() << Endl;
+            str << "ProcessUrgentInFlight: " << ProcessUrgentInFlight << Endl << Endl;
+
+            str << "ScanTableId: " << ScanTableId << Endl;
+            str << "Columns: " << Columns.size() << Endl;
+            str << "ShardRanges: " << ShardRanges.size() << Endl;
+            str << "CountMinSketches: " << CountMinSketches.size() << Endl << Endl;
+
+            str << "ScanTablesByTime: " << ScanTablesByTime.size() << Endl;
+            if (!ScanTablesByTime.empty()) {
+                auto& scanTable = ScanTablesByTime.top();
+                str << "    top: " << scanTable.PathId
+                    << ", last update time: " << scanTable.LastUpdateTime << Endl;
+            }
+            str << "ScanTablesBySchemeShard: " << ScanTablesBySchemeShard.size() << Endl;
+            if (!ScanTablesBySchemeShard.empty()) {
+                str << "    " << ScanTablesBySchemeShard.begin()->first << Endl;
+                std::function<TPathId(const TPathId&)> extr = [](const auto& x) { return x; };
+                PrintContainerStart(ScanTablesBySchemeShard.begin()->second, 2, str, extr);
+            }
+            str << "ScanStartTime: " << ScanStartTime << Endl;
         }
     }
 

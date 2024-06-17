@@ -80,12 +80,13 @@
                                                                             "UserID"
                                                                         ],
                                                                         "ReadRanges": [
-                                                                            "EventTime (-\u221e, +\u221e)",
                                                                             "CounterID (-\u221e, +\u221e)",
                                                                             "EventDate (-\u221e, +\u221e)",
                                                                             "UserID (-\u221e, +\u221e)",
+                                                                            "EventTime (-\u221e, +\u221e)",
                                                                             "WatchID (-\u221e, +\u221e)"
                                                                         ],
+                                                                        "Scan": "Parallel",
                                                                         "SsaProgram": {
                                                                             "Command": [
                                                                                 {
@@ -101,7 +102,7 @@
                                                                                     }
                                                                                 }
                                                                             ],
-                                                                            "Version": 4
+                                                                            "Version": 5
                                                                         },
                                                                         "Table": "clickbench/plans/column/hits"
                                                                     }
@@ -178,12 +179,13 @@
                                                                     "UserID"
                                                                 ],
                                                                 "ReadRanges": [
-                                                                    "EventTime (-\u221e, +\u221e)",
                                                                     "CounterID (-\u221e, +\u221e)",
                                                                     "EventDate (-\u221e, +\u221e)",
                                                                     "UserID (-\u221e, +\u221e)",
+                                                                    "EventTime (-\u221e, +\u221e)",
                                                                     "WatchID (-\u221e, +\u221e)"
                                                                 ],
+                                                                "Scan": "Parallel",
                                                                 "SsaProgram": {
                                                                     "Command": [
                                                                         {
@@ -199,7 +201,7 @@
                                                                             }
                                                                         }
                                                                     ],
-                                                                    "Version": 4
+                                                                    "Version": 5
                                                                 },
                                                                 "Table": "clickbench/plans/column/hits"
                                                             }
@@ -226,10 +228,10 @@
                                 "UserID"
                             ],
                             "scan_by": [
-                                "EventTime (-\u221e, +\u221e)",
                                 "CounterID (-\u221e, +\u221e)",
                                 "EventDate (-\u221e, +\u221e)",
                                 "UserID (-\u221e, +\u221e)",
+                                "EventTime (-\u221e, +\u221e)",
                                 "WatchID (-\u221e, +\u221e)"
                             ],
                             "type": "FullScan"

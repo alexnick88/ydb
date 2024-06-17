@@ -79,8 +79,7 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
 
     Y_UNIT_TEST(AggregationCountPushdown) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         TLocalHelper(kikimr).CreateTestOlapTable();
@@ -96,7 +95,7 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
             WriteTestData(kikimr, "/Root/olapStore/olapTable", 20000, 2000000, 7000);
             WriteTestData(kikimr, "/Root/olapStore/olapTable", 30000, 1000000, 11000);
         }
-        while (csController->GetIndexations().Val() == 0) {
+        while (csController->GetInsertFinishedCounter().Val() == 0) {
             Cout << "Wait indexation..." << Endl;
             Sleep(TDuration::Seconds(2));
         }
@@ -129,8 +128,7 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
 
     Y_UNIT_TEST(AggregationCountGroupByPushdown) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         TLocalHelper(kikimr).CreateTestOlapTable();
@@ -175,8 +173,7 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
 
     Y_UNIT_TEST_TWIN(CountAllPushdown, UseLlvm) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         TLocalHelper(kikimr).CreateTestOlapTable();
@@ -219,8 +216,7 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
 
     Y_UNIT_TEST_TWIN(CountAllPushdownBackwardCompatibility, EnableLlvm) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         TLocalHelper(kikimr).CreateTestOlapTable();
@@ -263,8 +259,7 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
 
     Y_UNIT_TEST(CountAllNoPushdown) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         TLocalHelper(kikimr).CreateTestOlapTable();
@@ -1148,7 +1143,9 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
                 SELECT id, JSON_VALUE(jsonval, "$.col1"), JSON_VALUE(jsondoc, "$.col1") FROM `/Root/tableWithNulls`
                 WHERE JSON_VALUE(jsonval, "$.col1") = "val1" AND id = 1;
             )")
-#if SSA_RUNTIME_VERSION >= 3U
+#if SSA_RUNTIME_VERSION >= 5U
+            .AddExpectedPlanOptions("KqpOlapApply")
+#elif SSA_RUNTIME_VERSION >= 3U
             .AddExpectedPlanOptions("KqpOlapJsonValue")
 #else
             .AddExpectedPlanOptions("Udf")
@@ -1164,7 +1161,9 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
                 SELECT id, JSON_VALUE(jsonval, "$.'col-abc'"), JSON_VALUE(jsondoc, "$.'col-abc'") FROM `/Root/tableWithNulls`
                 WHERE JSON_VALUE(jsonval, "$.'col-abc'") = "val-abc" AND id = 1;
             )")
-#if SSA_RUNTIME_VERSION >= 3U
+#if SSA_RUNTIME_VERSION >= 5U
+            .AddExpectedPlanOptions("KqpOlapApply")
+#elif SSA_RUNTIME_VERSION >= 3U
             .AddExpectedPlanOptions("KqpOlapJsonValue")
 #else
             .AddExpectedPlanOptions("Udf")
@@ -1180,7 +1179,9 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
                 SELECT id, JSON_VALUE(jsonval, "$.col1" RETURNING String), JSON_VALUE(jsondoc, "$.col1") FROM `/Root/tableWithNulls`
                 WHERE JSON_VALUE(jsonval, "$.col1" RETURNING String) = "val1" AND id = 1;
             )")
-#if SSA_RUNTIME_VERSION >= 3U
+#if SSA_RUNTIME_VERSION >= 5U
+            .AddExpectedPlanOptions("KqpOlapApply")
+#elif SSA_RUNTIME_VERSION >= 3U
             .AddExpectedPlanOptions("KqpOlapJsonValue")
 #else
             .AddExpectedPlanOptions("Udf")
@@ -1196,7 +1197,9 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
                 SELECT id, JSON_VALUE(jsonval, "$.obj.obj_col2_int" RETURNING Int), JSON_VALUE(jsondoc, "$.obj.obj_col2_int" RETURNING Int) FROM `/Root/tableWithNulls`
                 WHERE JSON_VALUE(jsonval, "$.obj.obj_col2_int" RETURNING Int) = 16 AND id = 1;
             )")
-#if SSA_RUNTIME_VERSION >= 3U
+#if SSA_RUNTIME_VERSION >= 5U
+            .AddExpectedPlanOptions("KqpOlapApply")
+#elif SSA_RUNTIME_VERSION >= 3U
             .AddExpectedPlanOptions("KqpOlapJsonValue")
 #else
             .AddExpectedPlanOptions("Udf")
@@ -1212,7 +1215,9 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
                 SELECT id, JSON_VALUE(jsonval, "$.col1"), JSON_VALUE(jsondoc, "$.col1") FROM `/Root/tableWithNulls`
                 WHERE JSON_VALUE(jsondoc, "$.col1") = "val1" AND id = 6;
             )")
-#if SSA_RUNTIME_VERSION >= 3U
+#if SSA_RUNTIME_VERSION >= 5U
+            .AddExpectedPlanOptions("KqpOlapApply")
+#elif SSA_RUNTIME_VERSION >= 3U
             .AddExpectedPlanOptions("KqpOlapJsonValue")
 #else
             .AddExpectedPlanOptions("Udf")
@@ -1228,7 +1233,9 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
                 SELECT id, JSON_VALUE(jsonval, "$.col1"), JSON_VALUE(jsondoc, "$.col1" RETURNING String) FROM `/Root/tableWithNulls`
                 WHERE JSON_VALUE(jsondoc, "$.col1" RETURNING String) = "val1" AND id = 6;
             )")
-#if SSA_RUNTIME_VERSION >= 3U
+#if SSA_RUNTIME_VERSION >= 5U
+            .AddExpectedPlanOptions("KqpOlapApply")
+#elif SSA_RUNTIME_VERSION >= 3U
             .AddExpectedPlanOptions("KqpOlapJsonValue")
 #else
             .AddExpectedPlanOptions("Udf")
@@ -1244,7 +1251,9 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
                 SELECT id, JSON_VALUE(jsonval, "$.obj.obj_col2_int"), JSON_VALUE(jsondoc, "$.obj.obj_col2_int" RETURNING Int) FROM `/Root/tableWithNulls`
                 WHERE JSON_VALUE(jsondoc, "$.obj.obj_col2_int" RETURNING Int) = 16 AND id = 6;
             )")
-#if SSA_RUNTIME_VERSION >= 3U
+#if SSA_RUNTIME_VERSION >= 5U
+            .AddExpectedPlanOptions("KqpOlapApply")
+#elif SSA_RUNTIME_VERSION >= 3U
             .AddExpectedPlanOptions("KqpOlapJsonValue")
 #else
             .AddExpectedPlanOptions("Udf")
@@ -1261,7 +1270,9 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
                 WHERE
                     JSON_EXISTS(jsonval, "$.col1") AND level = 1;
             )")
-#if SSA_RUNTIME_VERSION >= 3U
+#if SSA_RUNTIME_VERSION >= 5U
+            .AddExpectedPlanOptions("KqpOlapApply")
+#elif SSA_RUNTIME_VERSION >= 3U
             .AddExpectedPlanOptions("KqpOlapJsonExists")
 #else
             .AddExpectedPlanOptions("Udf")
@@ -1278,7 +1289,9 @@ Y_UNIT_TEST_SUITE(KqpOlapAggregations) {
                 WHERE
                     JSON_EXISTS(jsondoc, "$.col1") AND id = 6;
             )")
-#if SSA_RUNTIME_VERSION >= 3U
+#if SSA_RUNTIME_VERSION >= 5U
+            .AddExpectedPlanOptions("KqpOlapApply")
+#elif SSA_RUNTIME_VERSION >= 3U
             .AddExpectedPlanOptions("KqpOlapJsonExists")
 #else
             .AddExpectedPlanOptions("Udf")

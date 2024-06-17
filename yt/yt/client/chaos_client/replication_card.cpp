@@ -61,6 +61,36 @@ void FormatProgressWithProjection(
     builder->AppendChar(']');
 }
 
+DEFINE_BIT_ENUM_WITH_UNDERLYING_TYPE(EReplicationCardOptionsBits, ui8,
+    ((None)(0))
+    ((IncludeCoordinators)(1 << 0))
+    ((IncludeProgress)(1 << 1))
+    ((IncludeHistory)(1 << 2))
+    ((IncludeReplicatedTableOptions)(1 << 3))
+);
+
+EReplicationCardOptionsBits ToBitMask(const TReplicationCardFetchOptions& options)
+{
+    auto mask = EReplicationCardOptionsBits::None;
+    if (options.IncludeCoordinators) {
+        mask |= EReplicationCardOptionsBits::IncludeCoordinators;
+    }
+
+    if (options.IncludeProgress) {
+        mask |= EReplicationCardOptionsBits::IncludeProgress;
+    }
+
+    if (options.IncludeHistory) {
+        mask |= EReplicationCardOptionsBits::IncludeHistory;
+    }
+
+    if (options.IncludeReplicatedTableOptions) {
+        mask |= EReplicationCardOptionsBits::IncludeReplicatedTableOptions;
+    }
+
+    return mask;
+}
+
 } // namespace NDetail
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -81,9 +111,10 @@ void FormatValue(TStringBuilderBase* builder, const TReplicationCardFetchOptions
         options.IncludeHistory);
 }
 
-TString ToString(const TReplicationCardFetchOptions& options)
+bool TReplicationCardFetchOptions::Contains(const TReplicationCardFetchOptions& other) const
 {
-    return ToStringViaBuilder(options);
+    auto selfMask = NDetail::ToBitMask(*this);
+    return (selfMask | NDetail::ToBitMask(other)) == selfMask;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -108,11 +139,6 @@ void FormatValue(
 
 }
 
-TString ToString(const TReplicationProgress& replicationProgress)
-{
-    return ToStringViaBuilder(replicationProgress);
-}
-
 void FormatValue(TStringBuilderBase* builder, const TReplicaHistoryItem& replicaHistoryItem, TStringBuf /*spec*/)
 {
     builder->AppendFormat("{Era: %v, Timestamp: %v, Mode: %v, State: %v}",
@@ -120,11 +146,6 @@ void FormatValue(TStringBuilderBase* builder, const TReplicaHistoryItem& replica
         replicaHistoryItem.Timestamp,
         replicaHistoryItem.Mode,
         replicaHistoryItem.State);
-}
-
-TString ToString(const TReplicaHistoryItem& replicaHistoryItem)
-{
-    return ToStringViaBuilder(replicaHistoryItem);
 }
 
 void FormatValue(
@@ -143,11 +164,6 @@ void FormatValue(
     FormatValue(builder, replicaInfo.ReplicationProgress, TStringBuf(), replicationProgressProjection);
 
     builder->AppendFormat(", History: %v}", replicaInfo.History);
-}
-
-TString ToString(const TReplicaInfo& replicaInfo)
-{
-    return ToStringViaBuilder(replicaInfo);
 }
 
 void FormatValue(
@@ -832,6 +848,33 @@ TDuration ComputeReplicationProgressLag(
     }
 
     return lag;
+}
+
+THashMap<TReplicaId, TDuration> ComputeReplicasLag(const THashMap<TReplicaId, TReplicaInfo>& replicas)
+{
+    TReplicationProgress syncProgress;
+    for (const auto& [replicaId, replicaInfo] : replicas) {
+        if (IsReplicaReallySync(replicaInfo.Mode, replicaInfo.State, replicaInfo.History.back())) {
+            if (syncProgress.Segments.empty()) {
+                syncProgress = replicaInfo.ReplicationProgress;
+            } else {
+                syncProgress = BuildMaxProgress(syncProgress, replicaInfo.ReplicationProgress);
+            }
+        }
+    }
+
+    THashMap<TReplicaId, TDuration> result;
+    for (const auto& [replicaId, replicaInfo] : replicas) {
+        if (IsReplicaReallySync(replicaInfo.Mode, replicaInfo.State, replicaInfo.History.back())) {
+            result.emplace(replicaId, TDuration::Zero());
+        } else {
+            result.emplace(
+                replicaId,
+                ComputeReplicationProgressLag(syncProgress, replicaInfo.ReplicationProgress));
+        }
+    }
+
+    return result;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

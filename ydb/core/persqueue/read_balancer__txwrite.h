@@ -15,11 +15,13 @@ struct TPartInfo {
     ui32 PartitionId;
     ui32 Group;
     ui64 TabletId;
+    NKikimrPQ::TPartitionKeyRange KeyRange;
 
-    TPartInfo(const ui32 partitionId, const ui64 tabletId, const ui32 group)
+    TPartInfo(const ui32 partitionId, const ui64 tabletId, const ui32 group, const NKikimrPQ::TPartitionKeyRange& keyRange)
         : PartitionId(partitionId)
         , Group(group)
         , TabletId(tabletId)
+        , KeyRange(keyRange)
     {}
 };
 
@@ -91,7 +93,6 @@ struct TPersQueueReadBalancer::TTxWrite : public ITransaction {
         }
         Self->WaitingResponse.clear();
 
-        Self->NoGroupsInBase = false;
         if (!Self->Inited) {
             Self->Inited = true;
             Self->InitDone(ctx);

@@ -165,11 +165,14 @@ class KqpRunner(Runner):
         self,
         kqprun_path: Path,
         settings: Settings,
+        udf_dir: Path,
     ):
         self.scheme_renderer = SchemeRenderer()
         self.app_conf_renderer = AppConfigRenderer()
         self.kqprun_path = kqprun_path
         self.settings = settings
+
+        self.udf_dir = udf_dir
 
     def run(self, test_name: str, script: str, generic_settings: GenericSettings) -> Result:
         LOGGER.debug(script)
@@ -191,17 +194,29 @@ class KqpRunner(Runner):
         result_path = artifacts.make_path(test_name=test_name, artifact_name='result.json')
 
         # For debug add option --trace-opt to args
-        cmd = f'{self.kqprun_path} -s {scheme_path} -p {script_path} --app-config={app_conf_path} --result-file={result_path} --result-format=full'
-        out = subprocess.run(cmd, shell=True, capture_output=True)
+        cmd = f'{self.kqprun_path} -s {scheme_path} -p {script_path} --app-config={app_conf_path} --result-file={result_path} --result-format=full-json --udfs-dir={self.udf_dir} '
 
+        output = None
         data_out = None
         data_out_with_types = None
         schema = None
+        returncode = 0
 
-        if out.returncode == 0:
+        try:
+            output = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT, timeout=60)
+        except subprocess.CalledProcessError as e:
+            LOGGER.error(
+                'Execution failed:\n\nSTDOUT: %s\n\nSTDERR: %s\n\n',
+                e.stdout.decode('utf-8') if e.stdout else None,
+                e.stderr.decode('utf-8') if e.stderr else None,
+            )
+
+            output = e.stdout
+            returncode = e.returncode
+        else:
             # Parse output
             with open(result_path, 'r') as f:
-                result = json.loads(f.read().encode('ascii'), strict=False)
+                result = json.loads(f.read().encode('utf-8'), strict=False)
 
             # Kqprun's data output is missing type information (everything is a string),
             # so we have to recover schema and transform the results to make them comparable with the inputs
@@ -225,24 +240,14 @@ class KqpRunner(Runner):
             artifacts.dump_json(data_out, test_name, "data_out.yson")
             artifacts.dump_str(data_out_with_types, test_name, "data_out_with_types.yson")
 
-        else:
-            LOGGER.error(
-                'Execution failed:\n\nSTDOUT: %s\n\nSTDERR: %s\n\n',
-                out.stdout.decode('utf-8'),
-                out.stderr.decode('utf-8'),
-            )
-
-        with open(artifacts.make_path(test_name, "kqprun.err"), "w") as f:
-            f.write(out.stderr.decode('utf-8'))
-
-        with open(artifacts.make_path(test_name, "kqprun.out"), "w") as f:
-            f.write(out.stdout.decode('utf-8'))
+        finally:
+            with open(artifacts.make_path(test_name, "kqprun.out"), "w") as f:
+                f.write(output.decode('utf-8'))
 
         return Result(
             data_out=data_out,
             data_out_with_types=data_out_with_types,
             schema=schema,
-            stdout=out.stdout.decode('utf-8'),
-            stderr=out.stderr.decode('utf-8'),
-            returncode=out.returncode,
+            output=output.decode('utf-8') if output else None,
+            returncode=returncode,
         )

@@ -151,7 +151,7 @@ void PipeReaderToWriter(
             }
         } catch (const std::exception& ex) {
             if (options.ReaderErrorWrapper) {
-                THROW_ERROR(options.ReaderErrorWrapper(ex));
+                THROW_ERROR options.ReaderErrorWrapper(ex);
             } else {
                 throw;
             }
@@ -239,6 +239,24 @@ void PipeInputToOutput(
         }
 
         output->Write(buffer.Begin(), length);
+    }
+
+    output->Finish();
+}
+
+void PipeInputToOutput(
+    const NConcurrency::IAsyncZeroCopyInputStreamPtr& input,
+    IOutputStream* output)
+{
+    while (true) {
+        auto data = WaitFor(input->Read())
+            .ValueOrThrow();
+
+        if (!data) {
+            break;
+        }
+
+        output->Write(data.Begin(), data.Size());
     }
 
     output->Finish();

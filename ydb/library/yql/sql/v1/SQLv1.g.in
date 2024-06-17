@@ -62,6 +62,7 @@ sql_stmt_core:
   | upsert_object_stmt
   | create_view_stmt
   | drop_view_stmt
+  | alter_replication_stmt
 ;
 
 expr:
@@ -664,6 +665,7 @@ alter_table_action:
   | alter_table_alter_changefeed
   | alter_table_drop_changefeed
   | alter_table_rename_index_to
+  | alter_table_alter_index
 ;
 
 alter_external_table_stmt: ALTER EXTERNAL TABLE simple_table_ref alter_external_table_action (COMMA alter_external_table_action)*;
@@ -697,6 +699,7 @@ alter_table_rename_index_to: RENAME INDEX an_id TO an_id;
 alter_table_add_changefeed: ADD changefeed;
 alter_table_alter_changefeed: ALTER CHANGEFEED an_id changefeed_alter_settings;
 alter_table_drop_changefeed: DROP CHANGEFEED an_id;
+alter_table_alter_index: ALTER INDEX an_id alter_table_alter_index_action;
 
 column_schema: an_id_schema type_name_or_bind family_relation? opt_column_constraints;
 family_relation: FAMILY an_id;
@@ -754,6 +757,12 @@ split_boundaries:
 
 literal_value_list: LPAREN literal_value (COMMA literal_value)* RPAREN;
 
+alter_table_alter_index_action:
+    alter_table_set_table_setting_uncompat
+  | alter_table_set_table_setting_compat
+  | alter_table_reset_table_setting
+;
+
 drop_table_stmt: DROP (TABLE | TABLESTORE | EXTERNAL TABLE) (IF EXISTS)? simple_table_ref;
 
 create_user_stmt: CREATE USER role_name create_user_option?;
@@ -797,6 +806,13 @@ create_replication_stmt: CREATE ASYNC REPLICATION object_ref
 replication_target: object_ref AS object_ref;
 replication_settings: replication_settings_entry (COMMA replication_settings_entry)*;
 replication_settings_entry: an_id EQUALS STRING_VALUE;
+
+alter_replication_stmt: ALTER ASYNC REPLICATION object_ref alter_replication_action (COMMA alter_replication_action)*;
+alter_replication_action:
+    alter_replication_set_setting
+;
+
+alter_replication_set_setting: SET LPAREN replication_settings RPAREN;
 
 drop_replication_stmt: DROP ASYNC REPLICATION object_ref CASCADE?;
 

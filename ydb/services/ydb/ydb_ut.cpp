@@ -1,8 +1,8 @@
 #include <library/cpp/testing/unittest/tests_data.h>
 #include <library/cpp/testing/unittest/registar.h>
 
-#include <grpc++/client_context.h>
-#include <grpc++/create_channel.h>
+#include <grpcpp/client_context.h>
+#include <grpcpp/create_channel.h>
 
 #include <ydb/core/base/storage_pools.h>
 #include <ydb/core/kqp/ut/common/kqp_ut_common.h>
@@ -5574,7 +5574,7 @@ Y_UNIT_TEST(DisableWritesToDatabase) {
     auto sender = runtime.AllocateEdgeActor();
     InitRoot(server, sender);
 
-    runtime.SetLogPriority(NKikimrServices::FLAT_TX_SCHEMESHARD, NLog::PRI_DEBUG);
+    runtime.SetLogPriority(NKikimrServices::FLAT_TX_SCHEMESHARD, NLog::PRI_TRACE);
     NDataShard::gDbStatsReportInterval = TDuration::Seconds(0);
     NDataShard::gDbStatsDataSizeResolution = 1;
     NDataShard::gDbStatsRowCountResolution = 1;

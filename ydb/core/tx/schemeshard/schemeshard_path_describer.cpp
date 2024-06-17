@@ -372,6 +372,9 @@ void TPathDescriber::DescribeTable(const TActorContext& ctx, TPathId pathId, TPa
         case NKikimrSchemeOp::EPathTypeSequence:
             Self->DescribeSequence(childPathId, childName, *entry->AddSequences(), returnSetVal);
             break;
+        case NKikimrSchemeOp::EPathTypeTable:
+            // TODO: move BackupImplTable under special scheme element
+            break;
         default:
             Y_FAIL_S("Unexpected table's child"
                 << ": tableId# " << pathId
@@ -409,12 +412,12 @@ void TPathDescriber::DescribeColumnTable(TPathId pathId, TPathElement::TPtr path
     auto* pathDescription = Result->Record.MutablePathDescription();
     auto description = pathDescription->MutableColumnTableDescription();
     description->CopyFrom(tableInfo->Description);
-    description->MutableSharding()->CopyFrom(tableInfo->Sharding);
+    description->MutableSharding()->CopyFrom(tableInfo->Description.GetSharding());
 
     if (tableInfo->IsStandalone()) {
         FillAggregatedStats(*pathDescription, tableInfo->GetStats());
     } else {
-        const TOlapStoreInfo::TPtr storeInfo = *Self->OlapStores.FindPtr(*tableInfo->OlapStorePathId);
+        const TOlapStoreInfo::TPtr storeInfo = *Self->OlapStores.FindPtr(tableInfo->GetOlapStorePathIdVerified());
         Y_ABORT_UNLESS(storeInfo, "OlapStore not found");
 
         auto& preset = storeInfo->SchemaPresets.at(description->GetSchemaPresetId());

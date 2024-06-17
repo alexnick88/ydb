@@ -53,7 +53,7 @@ TTransaction::TTransaction(
     , PingPeriod_(pingPeriod)
     , StickyProxyAddress_(stickyParameters ? std::move(stickyParameters->ProxyAddress) : TString())
     , SequenceNumberSourceId_(sequenceNumberSourceId)
-    , Logger(RpcProxyClientLogger.WithTag("TransactionId: %v, %v",
+    , Logger(RpcProxyClientLogger().WithTag("TransactionId: %v, %v",
         Id_,
         Connection_->GetLoggingTag()))
     , Proxy_(Channel_)
@@ -478,7 +478,7 @@ void TTransaction::ModifyRows(
 
     if (future) {
         future
-            .Subscribe(BIND([=, this, this_ = MakeStrong(this)](const TError& error) {
+            .Subscribe(BIND([=, this, this_ = MakeStrong(this)] (const TError& error) {
                 if (!error.IsOK()) {
                     YT_LOG_DEBUG(error, "Error sending row modifications");
                     YT_UNUSED_FUTURE(Abort());

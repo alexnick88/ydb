@@ -1,3 +1,5 @@
+pragma warning("disable","4510");
+
 $date32_min = unwrap(cast(-53375809 as date32));
 $date32_max = unwrap(cast(53375807 as date32));
 $datetime64_min = unwrap(cast(-4611669897600 as datetime64));

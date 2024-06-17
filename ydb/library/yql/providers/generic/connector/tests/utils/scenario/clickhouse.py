@@ -3,7 +3,7 @@ from typing import Sequence
 import ydb.library.yql.providers.generic.connector.api.common.data_source_pb2 as data_source_pb2
 
 import ydb.library.yql.providers.generic.connector.tests.utils.artifacts as artifacts
-from ydb.library.yql.providers.generic.connector.tests.utils.comparator import data_outs_equal
+from ydb.library.yql.providers.generic.connector.tests.utils.comparator import assert_data_outs_equal
 from ydb.library.yql.providers.generic.connector.tests.utils.database import Database
 from ydb.library.yql.providers.generic.connector.tests.utils.log import make_logger, debug_with_limit
 from ydb.library.yql.providers.generic.connector.tests.utils.schema import Schema
@@ -101,9 +101,9 @@ def select_positive(
         generic_settings=test_case.generic_settings,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, result.output
 
-    assert data_outs_equal(test_case.data_out, result.data_out_with_types), (
+    assert_data_outs_equal(test_case.data_out, result.data_out_with_types), (
         test_case.data_out,
         result.data_out_with_types,
     )
@@ -128,7 +128,7 @@ def select_missing_database(
         generic_settings=test_case.generic_settings,
     )
 
-    assert test_case.database.missing_database_msg() in result.stderr, result.stderr
+    assert test_case.database.missing_database_msg() in result.output, result.output
 
 
 def select_missing_table(
@@ -153,4 +153,4 @@ def select_missing_table(
         generic_settings=test_case.generic_settings,
     )
 
-    assert test_case.database.missing_table_msg() in result.stderr, result.stderr
+    assert test_case.database.missing_table_msg() in result.output, result.output

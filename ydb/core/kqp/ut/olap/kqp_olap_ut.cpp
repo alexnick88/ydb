@@ -802,7 +802,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
             ui32 i = 0;
             const ui32 rowsPack = 20;
             const TInstant start = Now();
-            while (!csController->HasCompactions() && Now() - start < TDuration::Seconds(100)) {
+            while (!csController->GetCompactionFinishedCounter().Val() && Now() - start < TDuration::Seconds(100)) {
                 WriteTestData(kikimr, "/Root/olapStore/olapTable", 0, 1000000 + i * rowsPack, rowsPack);
                 ++i;
                 rowsCount += rowsPack;
@@ -942,12 +942,12 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
             R"(`level` = Int8("1"))",
             R"(`level` = Int16("1"))",
             R"(`level` = Int32("1"))",
-            R"((`level`, `uid`, `resource_id`) = (Int32("1"), "uid_3000001", "10001"))",
             R"(`level` > Int32("3"))",
             R"(`level` < Int32("1"))",
             R"(`level` >= Int32("4"))",
             R"(`level` <= Int32("0"))",
             R"(`level` != Int32("0"))",
+            R"((`level`, `uid`, `resource_id`) = (Int32("1"), "uid_3000001", "10001"))",
             R"((`level`, `uid`, `resource_id`) > (Int32("1"), "uid_3000001", "10001"))",
             R"((`level`, `uid`, `resource_id`) > (Int32("1"), "uid_3000000", "10001"))",
             R"((`level`, `uid`, `resource_id`) < (Int32("1"), "uid_3000002", "10001"))",
@@ -1015,8 +1015,17 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
             R"(`level` / 2.f <= 1.)",
             R"(`level` % 3. != 1.f)",
             //R"(`timestamp` >= Timestamp("1970-01-01T00:00:00.000001Z"))",
-            R"(`timestamp` >= Timestamp("1970-01-01T00:00:00.000001Z") AND `level` > 3)",
-            R"((`timestamp`, `level`) >= (Timestamp("1970-01-01T00:00:00.000001Z"), 3))",
+            R"(`timestamp` >= Timestamp("1970-01-01T00:00:03.000001Z") AND `level` < 4)",
+            R"((`timestamp`, `level`) >= (Timestamp("1970-01-01T00:00:03.000001Z"), 3))",
+#endif
+#if SSA_RUNTIME_VERSION >= 5U
+            R"(IF(`level` > 3, -`level`, +`level`) < 2)",
+            R"(StartsWith(`message` ?? `resource_id`, "10000"))",
+            R"(NOT EndsWith(`message` ?? `resource_id`, "xxx"))",
+            R"(ChooseMembers(TableRow(), ['level', 'uid', 'resource_id']) == <|level:1, uid:"uid_3000001", resource_id:"10001"|>)",
+            R"(ChooseMembers(TableRow(), ['level', 'uid', 'resource_id']) != <|level:1, uid:"uid_3000001", resource_id:"10001"|>)",
+            R"(`uid` LIKE "_id%000_")",
+            R"(`uid` ILIKE "UID%002")",
 #endif
         };
 
@@ -1077,6 +1086,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
             R"(`level` >= CAST("2" As Uint32))",
             R"(`level` = NULL)",
             R"(`level` > NULL)",
+            R"(Re2::Match('uid.*')(`uid`))",
 #if SSA_RUNTIME_VERSION < 2U
             R"(`uid` LIKE "%30000%")",
             R"(`uid` LIKE "uid%")",
@@ -1265,7 +1275,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
                         TStringBuilder() << "Predicate was pushed down. Query: " << query);
 #endif
     }
-
+#if SSA_RUNTIME_VERSION < 5U
     Y_UNIT_TEST(PredicatePushdown_LikeNotPushedDownIfAnsiLikeDisabled) {
         auto settings = TKikimrSettings()
             .SetWithSampleTables(false);
@@ -1291,7 +1301,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
         UNIT_ASSERT_C(ast.find("KqpOlapFilter") == std::string::npos,
                         TStringBuilder() << "Predicate pushed down. Query: " << query);
     }
-
+#endif
     Y_UNIT_TEST(PredicatePushdown_MixStrictAndNotStrict) {
         auto settings = TKikimrSettings()
             .SetWithSampleTables(false);
@@ -1424,7 +1434,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
         auto sender = runtime->AllocateEdgeActor();
 
         InitRoot(server, sender);
-        Tests::NCommon::TLoggerInit(runtime).Initialize();
+//        Tests::NCommon::TLoggerInit(runtime).Initialize();
 
         ui32 numShards = NSan::PlainOrUnderSanitizer(1000, 10);
         ui32 numIterations = NSan::PlainOrUnderSanitizer(50, 10);
@@ -1554,7 +1564,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
         auto sender = runtime->AllocateEdgeActor();
 
         InitRoot(server, sender);
-        Tests::NCommon::TLoggerInit(runtime).Initialize();
+//        Tests::NCommon::TLoggerInit(runtime).Initialize();
 
         ui32 numShards = NSan::PlainOrUnderSanitizer(100, 10);
         ui32 numIterations = NSan::PlainOrUnderSanitizer(100, 10);
@@ -1612,7 +1622,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
                             Cerr << (TStringBuilder() << "-- EvScanData from " << ev->Sender << ": hijack event" << Endl);
                             Cerr.Flush();
                             for (auto&& i : csController->GetShardActualIds()) {
-                                runtime->Send(MakePipePeNodeCacheID(false), NActors::TActorId(), new TEvPipeCache::TEvForward(
+                                runtime->Send(MakePipePerNodeCacheID(false), NActors::TActorId(), new TEvPipeCache::TEvForward(
                                     new TEvents::TEvPoisonPill(), i, false));
                             }
                         } else {
@@ -1892,7 +1902,6 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
         serverSettings.SetDomainName("Root")
             .SetUseRealThreads(false)
             .SetEnableMetadataProvider(true)
-            .SetForceColumnTablesCompositeMarks(true);
         ;
 
         Tests::TServer::TPtr server = new Tests::TServer(serverSettings);
@@ -1948,7 +1957,6 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
         serverSettings.SetDomainName("Root")
             .SetUseRealThreads(false)
             .SetEnableMetadataProvider(true)
-            .SetForceColumnTablesCompositeMarks(true);
         ;
 
         Tests::TServer::TPtr server = new Tests::TServer(serverSettings);
@@ -2002,7 +2010,6 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
         serverSettings.SetDomainName("Root")
             .SetUseRealThreads(false)
             .SetEnableMetadataProvider(true)
-            .SetForceColumnTablesCompositeMarks(true);
         ;
 
         Tests::TServer::TPtr server = new Tests::TServer(serverSettings);
@@ -2214,8 +2221,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
 
     Y_UNIT_TEST(Olap_InsertFailsOnDataQuery) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         Tests::NCommon::TLoggerInit(kikimr).Initialize();
@@ -2236,8 +2242,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
 
     Y_UNIT_TEST(Olap_InsertFailsOnGenericQuery) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         Tests::NCommon::TLoggerInit(kikimr).Initialize();
@@ -2256,8 +2261,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
 
     Y_UNIT_TEST(OlapRead_FailsOnDataQuery) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         Tests::NCommon::TLoggerInit(kikimr).Initialize();
@@ -2282,8 +2286,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
 
     Y_UNIT_TEST(OlapRead_UsesScanOnJoin) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         Tests::NCommon::TLoggerInit(kikimr).Initialize();
@@ -2305,8 +2308,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
 
     Y_UNIT_TEST(OlapRead_UsesScanOnJoinWithDataShardTable) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         Tests::NCommon::TLoggerInit(kikimr).Initialize();
@@ -2328,8 +2330,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
 
     Y_UNIT_TEST(OlapRead_UsesGenericQueryOnJoinWithDataShardTable) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         Tests::NCommon::TLoggerInit(kikimr).Initialize();
@@ -2354,8 +2355,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
 
     Y_UNIT_TEST(OlapRead_GenericQuery) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         Tests::NCommon::TLoggerInit(kikimr).Initialize();
@@ -2380,8 +2380,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
 
     Y_UNIT_TEST(OlapRead_StreamGenericQuery) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         Tests::NCommon::TLoggerInit(kikimr).Initialize();
@@ -2406,8 +2405,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
 
     Y_UNIT_TEST(OlapRead_ScanQuery) {
         auto settings = TKikimrSettings()
-            .SetWithSampleTables(false)
-            .SetForceColumnTablesCompositeMarks(true);
+            .SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
 
         Tests::NCommon::TLoggerInit(kikimr).Initialize();
@@ -2454,7 +2452,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
             tableInserter.AddRow().Add(2).Add("test_res_2").Add("val2").AddNull();
             testHelper.BulkUpsert(testTable, tableInserter);
         }
-        while (csController->GetIndexations().Val() == 0) {
+        while (csController->GetInsertFinishedCounter().Val() == 0) {
             Cout << "Wait indexation..." << Endl;
             Sleep(TDuration::Seconds(2));
         }
@@ -2480,7 +2478,7 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
             tableInserter.AddRow().Add(1).Add(10);
             testHelper.BulkUpsert(testTable, tableInserter);
         }
-        while (csController->GetIndexations().Val() < 1) {
+        while (csController->GetInsertFinishedCounter().Val() < 1) {
             Cout << "Wait indexation..." << Endl;
             Sleep(TDuration::Seconds(2));
         }
@@ -2491,524 +2489,177 @@ Y_UNIT_TEST_SUITE(KqpOlap) {
             testHelper.BulkUpsert(testTable, tableInserter);
         }
         testHelper.ReadData("SELECT value FROM `/Root/ColumnTableTest` WHERE id = 1", "[[110]]");
-        while (csController->GetIndexations().Val() < 2) {
+        while (csController->GetInsertFinishedCounter().Val() < 2) {
             Cout << "Wait indexation..." << Endl;
             Sleep(TDuration::Seconds(2));
         }
         testHelper.ReadData("SELECT value FROM `/Root/ColumnTableTest` WHERE id = 1", "[[110]]");
     }
 
-    Y_UNIT_TEST(OlapReplace_FromSelectSimple) {
+    void RunBlockChannelTest(auto blockChannelsMode) {
         NKikimrConfig::TAppConfig appConfig;
         appConfig.MutableTableServiceConfig()->SetEnableOlapSink(true);
+        appConfig.MutableTableServiceConfig()->SetBlockChannelsMode(blockChannelsMode);
         auto settings = TKikimrSettings()
             .SetAppConfig(appConfig)
-            .SetWithSampleTables(false);
+            .SetWithSampleTables(true);
+
         TKikimrRunner kikimr(settings);
         Tests::NCommon::TLoggerInit(kikimr).Initialize();
-        TTableWithNullsHelper(kikimr).CreateTableWithNulls();
-
-        auto session = kikimr.GetTableClient().CreateSession().GetValueSync().GetSession();
-
-        const TString query = R"(
-            CREATE TABLE `/Root/ColumnSource` (
-                Col1 Uint64 NOT NULL,
-                Col2 String,
-                Col3 Int32 NOT NULL,
-                PRIMARY KEY (Col1)
-            )
-            PARTITION BY HASH(Col1)
-            WITH (STORE = COLUMN, AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 10);
-
-            CREATE TABLE `/Root/DataShard1` (
-                Col1 Uint64 NOT NULL,
-                Col2 String,
-                Col3 Int32 NOT NULL,
-                PRIMARY KEY (Col1)
-            )
-            WITH (UNIFORM_PARTITIONS = 2, AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 2);
-
-            CREATE TABLE `/Root/ColumnShard1` (
-                Col1 Uint64 NOT NULL,
-                Col2 String,
-                Col3 Int32 NOT NULL,
-                PRIMARY KEY (Col1)
-            )
-            PARTITION BY HASH(Col1)
-            WITH (STORE = COLUMN, AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 3);
-
-            CREATE TABLE `/Root/ColumnShard2` (
-                Col1 Uint64 NOT NULL,
-                Col2 String,
-                Col3 Int32 NOT NULL,
-                PRIMARY KEY (Col1)
-            )
-            PARTITION BY HASH(Col1)
-            WITH (STORE = COLUMN, AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 16);
-
-            CREATE TABLE `/Root/ColumnShard3` (
-                Col1 Uint64 NOT NULL,
-                Col2 String,
-                Col3 Int32 NOT NULL,
-                PRIMARY KEY (Col1)
-            )
-            PARTITION BY HASH(Col1)
-            WITH (STORE = COLUMN, AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 16);
-
-            CREATE TABLE `/Root/DataShard2` (
-                Col1 Uint64 NOT NULL,
-                Col2 String,
-                Col3 Int32 NOT NULL,
-                PRIMARY KEY (Col1)
-            )
-            WITH (UNIFORM_PARTITIONS = 3, AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 3);
-        )";
-
-        auto result = session.ExecuteSchemeQuery(query).GetValueSync();
-        UNIT_ASSERT_C(result.GetStatus() == NYdb::EStatus::SUCCESS, result.GetIssues().ToString());
-
-        auto client = kikimr.GetQueryClient();
-        {
-            auto prepareResult = client.ExecuteQuery(R"(
-                REPLACE INTO `/Root/ColumnSource` (Col1, Col2, Col3) VALUES
-                    (1u, "test1", 10), (2u, "test2", 11), (3u, "test3", 12), (4u, NULL, 13);
-            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT_C(prepareResult.IsSuccess(), prepareResult.GetIssues().ToString());
-        }
-
-        {
-            // Missing Nullable column
-            const TString sql = R"(
-                REPLACE INTO `/Root/ColumnShard1`
-                SELECT 10u + Col1 AS Col1, 100 + Col3 AS Col3 FROM `/Root/ColumnSource`
-            )";
-            auto insertResult = client.ExecuteQuery(sql, NYdb::NQuery::TTxControl::BeginTx().CommitTx()).GetValueSync();
-            UNIT_ASSERT_C(insertResult.IsSuccess(), insertResult.GetIssues().ToString());
-
-            auto it = client.StreamExecuteQuery(R"(
-                SELECT * FROM `/Root/ColumnShard1` ORDER BY Col1, Col2, Col3;
-            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(it.GetStatus(), EStatus::SUCCESS, it.GetIssues().ToString());
-            TString output = StreamResultToYson(it);
-            CompareYson(
-                output,
-                R"([[11u;#;110];[12u;#;111];[13u;#;112];[14u;#;113]])");
-        }
-
-        {
-            // column -> column
-            const TString sql = R"(
-                REPLACE INTO `/Root/ColumnShard2`
-                SELECT * FROM `/Root/ColumnSource`
-            )";
-            auto insertResult = client.ExecuteQuery(sql, NYdb::NQuery::TTxControl::BeginTx().CommitTx()).GetValueSync();
-            UNIT_ASSERT_C(insertResult.IsSuccess(), insertResult.GetIssues().ToString());
-
-            auto it = client.StreamExecuteQuery(R"(
-                SELECT * FROM `/Root/ColumnShard2` ORDER BY Col1, Col2, Col3;
-            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(it.GetStatus(), EStatus::SUCCESS, it.GetIssues().ToString());
-            TString output = StreamResultToYson(it);
-            CompareYson(
-                output,
-                R"([[1u;["test1"];10];[2u;["test2"];11];[3u;["test3"];12];[4u;#;13]])");
-        }
-    }
-
-    Y_UNIT_TEST(OlapReplace_BadTransactions) {
-        NKikimrConfig::TAppConfig appConfig;
-        appConfig.MutableTableServiceConfig()->SetEnableOlapSink(true);
-        auto settings = TKikimrSettings()
-            .SetAppConfig(appConfig)
-            .SetWithSampleTables(false);
-        TKikimrRunner kikimr(settings);
-        Tests::NCommon::TLoggerInit(kikimr).Initialize();
-        TTableWithNullsHelper(kikimr).CreateTableWithNulls();
 
         auto session = kikimr.GetTableClient().CreateSession().GetValueSync().GetSession();
 
         const TString query = R"(
             CREATE TABLE `/Root/ColumnShard` (
-                Col1 Uint64 NOT NULL,
-                Col2 String,
-                Col3 Int32 NOT NULL,
-                PRIMARY KEY (Col1)
+                a Uint64 NOT NULL,
+                b Int32,
+                c Int64,
+                PRIMARY KEY (a)
             )
-            PARTITION BY HASH(Col1)
-            WITH (STORE = COLUMN, AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 10);
-
-            CREATE TABLE `/Root/DataShard` (
-                Col1 Uint64 NOT NULL,
-                Col2 String,
-                Col3 Int32 NOT NULL,
-                PRIMARY KEY (Col1)
-            )
-            WITH (UNIFORM_PARTITIONS = 2, AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 2);
+            PARTITION BY HASH(a)
+            WITH (STORE = COLUMN, AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 4);
         )";
 
         auto result = session.ExecuteSchemeQuery(query).GetValueSync();
         UNIT_ASSERT_C(result.GetStatus() == NYdb::EStatus::SUCCESS, result.GetIssues().ToString());
 
         auto client = kikimr.GetQueryClient();
-        {
+        { 
             auto prepareResult = client.ExecuteQuery(R"(
-                REPLACE INTO `/Root/ColumnShard` (Col1, Col2, Col3) VALUES
-                    (1u, "test1", 10), (2u, "test2", 11), (3u, "test3", 12), (4u, NULL, 13);
+                REPLACE INTO `/Root/ColumnShard` (a, b, c) VALUES
+                    (1u, 1, 5),
+                    (2u, 2, 5),
+                    (3u, 2, 0),
+                    (4u, 2, 5);
             )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT_C(prepareResult.IsSuccess(), prepareResult.GetIssues().ToString());
-        }
-        {
-            auto prepareResult = client.ExecuteQuery(R"(
-                REPLACE INTO `/Root/DataShard` (Col1, Col2, Col3) VALUES
-                    (10u, "test1", 10), (20u, "test2", 11), (30u, "test3", 12), (40u, NULL, 13);
-            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT_C(prepareResult.IsSuccess(), prepareResult.GetIssues().ToString());
+            UNIT_ASSERT(prepareResult.IsSuccess());;
         }
 
         {
-            // column -> row
-            const TString sql = R"(
-                REPLACE INTO `/Root/DataShard`
-                SELECT * FROM `/Root/ColumnShard`
-            )";
-            auto insertResult = client.ExecuteQuery(sql, NYdb::NQuery::TTxControl::BeginTx().CommitTx()).GetValueSync();
-            UNIT_ASSERT(!insertResult.IsSuccess());
-            UNIT_ASSERT_C(
-                insertResult.GetIssues().ToString().Contains("Transactions between column and row tables are disabled at current time"),
-                insertResult.GetIssues().ToString());
-        }
+            NYdb::NQuery::TExecuteQuerySettings scanSettings;
+            scanSettings.ExecMode(NYdb::NQuery::EExecMode::Explain);
+            auto it = client.StreamExecuteQuery(R"(
+                SELECT
+                    b, COUNT(*), SUM(a)
+                FROM `/Root/ColumnShard`
+                WHERE c = 5
+                GROUP BY b
+                ORDER BY b;
+            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx(), scanSettings).ExtractValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(it.GetStatus(), EStatus::SUCCESS, it.GetIssues().ToString());
+            auto plan = CollectStreamResult(it);
 
-        {
-            // row -> column
-            const TString sql = R"(
-                REPLACE INTO `/Root/ColumnShard`
-                SELECT * FROM `/Root/DataShard`
-            )";
-            auto insertResult = client.ExecuteQuery(sql, NYdb::NQuery::TTxControl::BeginTx().CommitTx()).GetValueSync();
-            UNIT_ASSERT(!insertResult.IsSuccess());
-            UNIT_ASSERT_C(
-                insertResult.GetIssues().ToString().Contains("Transactions between column and row tables are disabled at current time"),
-                insertResult.GetIssues().ToString());
-        }
-
-        {
-            // column & row read
-            const TString sql = R"(
-                SELECT * FROM `/Root/DataShard`;
-                SELECT * FROM `/Root/ColumnShard`;
-            )";
-            auto insertResult = client.ExecuteQuery(sql, NYdb::NQuery::TTxControl::BeginTx().CommitTx()).GetValueSync();
-            UNIT_ASSERT(!insertResult.IsSuccess());
-            UNIT_ASSERT_C(
-                insertResult.GetIssues().ToString().Contains("Transactions between column and row tables are disabled at current time"),
-                insertResult.GetIssues().ToString());
-        }
-
-        {
-            // column & row write
-            const TString sql = R"(
-                REPLACE INTO `/Root/DataShard` (Col1, Col2, Col3) VALUES
-                    (1u, "test1", 10), (2u, "test2", 11), (3u, "test3", 12), (4u, NULL, 13);
-                REPLACE INTO `/Root/ColumnShard` (Col1, Col2, Col3) VALUES
-                    (1u, "test1", 10), (2u, "test2", 11), (3u, "test3", 12), (4u, NULL, 13);
-            )";
-            auto insertResult = client.ExecuteQuery(sql, NYdb::NQuery::TTxControl::BeginTx().CommitTx()).GetValueSync();
-            UNIT_ASSERT(!insertResult.IsSuccess());
-            UNIT_ASSERT_C(
-                insertResult.GetIssues().ToString().Contains("Transactions between column and row tables are disabled at current time"),
-                insertResult.GetIssues().ToString());
-        }
-
-        {
-            // column read & row write
-            const TString sql = R"(
-                REPLACE INTO `/Root/DataShard` (Col1, Col2, Col3) VALUES
-                    (1u, "test1", 10), (2u, "test2", 11), (3u, "test3", 12), (4u, NULL, 13);
-                SELECT * FROM `/Root/ColumnShard`;
-            )";
-            auto insertResult = client.ExecuteQuery(sql, NYdb::NQuery::TTxControl::BeginTx().CommitTx()).GetValueSync();
-            UNIT_ASSERT(!insertResult.IsSuccess());
-            UNIT_ASSERT_C(
-                insertResult.GetIssues().ToString().Contains("Transactions between column and row tables are disabled at current time"),
-                insertResult.GetIssues().ToString());
-        }
-
-        {
-            // column write & row read
-            const TString sql = R"(
-                REPLACE INTO `/Root/ColumnShard` (Col1, Col2, Col3) VALUES
-                    (1u, "test1", 10), (2u, "test2", 11), (3u, "test3", 12), (4u, NULL, 13);
-                SELECT * FROM `/Root/DataShard`;
-            )";
-            auto insertResult = client.ExecuteQuery(sql, NYdb::NQuery::TTxControl::BeginTx().CommitTx()).GetValueSync();
-            UNIT_ASSERT(!insertResult.IsSuccess());
-            UNIT_ASSERT_C(
-                insertResult.GetIssues().ToString().Contains("Transactions between column and row tables are disabled at current time"),
-                insertResult.GetIssues().ToString());
-        }
-    }
-
-    Y_UNIT_TEST(OlapReplace_FromSelectLarge) {
-        NKikimrConfig::TAppConfig appConfig;
-        appConfig.MutableTableServiceConfig()->SetEnableOlapSink(true);
-        auto settings = TKikimrSettings()
-            .SetAppConfig(appConfig)
-            .SetWithSampleTables(false);
-
-        TTestHelper testHelper(settings);
-
-        TKikimrRunner& kikimr = testHelper.GetKikimr();
-        Tests::NCommon::TLoggerInit(kikimr).Initialize();
-
-        TVector<TTestHelper::TColumnSchema> schema = {
-            TTestHelper::TColumnSchema().SetName("Col1").SetType(NScheme::NTypeIds::Int64).SetNullable(false),
-            TTestHelper::TColumnSchema().SetName("Col2").SetType(NScheme::NTypeIds::Int32).SetNullable(false),
-        };
-
-        TTestHelper::TColumnTable testTable1;
-        testTable1.SetName("/Root/ColumnShard1").SetPrimaryKey({ "Col1" }).SetSharding({ "Col1" }).SetSchema(schema).SetMinPartitionsCount(1000);
-        testHelper.CreateTable(testTable1);
-
-        TTestHelper::TColumnTable testTable2;
-        testTable2.SetName("/Root/ColumnShard2").SetPrimaryKey({ "Col1" }).SetSharding({ "Col1" }).SetSchema(schema).SetMinPartitionsCount(1000);
-        testHelper.CreateTable(testTable2);
-
-        {
-            TTestHelper::TUpdatesBuilder tableInserter(testTable1.GetArrowSchema(schema));
-            for (size_t index = 0; index < 10000; ++index) {
-                tableInserter.AddRow().Add(index).Add(index * 10);
+            switch (blockChannelsMode) {
+                case NKikimrConfig::TTableServiceConfig_EBlockChannelsMode_BLOCK_CHANNELS_SCALAR:
+                    UNIT_ASSERT_C(plan.QueryStats->Getquery_ast().Contains("return (FromFlow (NarrowMap (WideFromBlocks"), plan.QueryStats->Getquery_ast());
+                    break;
+                case NKikimrConfig::TTableServiceConfig_EBlockChannelsMode_BLOCK_CHANNELS_AUTO:
+                    UNIT_ASSERT_C(plan.QueryStats->Getquery_ast().Contains("return (FromFlow (ExpandMap (NarrowMap (WideFromBlocks"), plan.QueryStats->Getquery_ast());
+                    break;
+                case NKikimrConfig::TTableServiceConfig_EBlockChannelsMode_BLOCK_CHANNELS_FORCE:
+                    UNIT_ASSERT_C(plan.QueryStats->Getquery_ast().Contains("return (FromFlow (WideMap"), plan.QueryStats->Getquery_ast());
+                    break;
             }
-            testHelper.BulkUpsert(testTable1, tableInserter);
         }
 
-        auto session = kikimr.GetTableClient().CreateSession().GetValueSync().GetSession();
-        auto client = kikimr.GetQueryClient();
-
-        {
-            const TString sql = R"(
-                REPLACE INTO `/Root/ColumnShard2`
-                SELECT * FROM `/Root/ColumnShard1`
-            )";
-            auto insertResult = client.ExecuteQuery(sql, NYdb::NQuery::TTxControl::BeginTx().CommitTx()).GetValueSync();
-            UNIT_ASSERT_C(insertResult.IsSuccess(), insertResult.GetIssues().ToString());
-
+        { 
             auto it = client.StreamExecuteQuery(R"(
-                SELECT COUNT(*) FROM `/Root/ColumnShard2`;
+                SELECT
+                    b, COUNT(*), SUM(a)
+                FROM `/Root/ColumnShard`
+                WHERE c = 5
+                GROUP BY b
+                ORDER BY b;
             )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
             UNIT_ASSERT_VALUES_EQUAL_C(it.GetStatus(), EStatus::SUCCESS, it.GetIssues().ToString());
             TString output = StreamResultToYson(it);
-            CompareYson(
-                output,
-                R"([[10000u]])");
+            CompareYson(output, R"([[[1];1u;1u];[[2];2u;6u]])");
         }
     }
 
-    Y_UNIT_TEST(OlapReplace_Simple) {
-        NKikimrConfig::TAppConfig appConfig;
-        appConfig.MutableTableServiceConfig()->SetEnableOlapSink(true);
-        auto settings = TKikimrSettings()
-            .SetAppConfig(appConfig)
-            .SetWithSampleTables(false);
+    Y_UNIT_TEST(BlockChannelScalar) {
+        RunBlockChannelTest(NKikimrConfig::TTableServiceConfig_EBlockChannelsMode_BLOCK_CHANNELS_SCALAR);
+    }
+
+    Y_UNIT_TEST(BlockChannelAuto) {
+        RunBlockChannelTest(NKikimrConfig::TTableServiceConfig_EBlockChannelsMode_BLOCK_CHANNELS_AUTO);
+    }
+
+    Y_UNIT_TEST(BlockChannelForce) {
+        RunBlockChannelTest(NKikimrConfig::TTableServiceConfig_EBlockChannelsMode_BLOCK_CHANNELS_FORCE);
+    }
+
+    Y_UNIT_TEST(CompactionPlanner) {
+        auto settings = TKikimrSettings().SetWithSampleTables(false);
         TKikimrRunner kikimr(settings);
-        Tests::NCommon::TLoggerInit(kikimr).Initialize();
-        TTableWithNullsHelper(kikimr).CreateTableWithNulls();
 
-        auto session = kikimr.GetTableClient().CreateSession().GetValueSync().GetSession();
+        TLocalHelper(kikimr).CreateTestOlapTable();
+        auto tableClient = kikimr.GetTableClient();
 
-        const TString query = R"(
-            CREATE TABLE `/Root/ColumnShard` (
-                Col1 Uint64 NOT NULL,
-                Col2 Int32,
-                Col4 String,
-                Col3 String NOT NULL,
-                PRIMARY KEY (Col1, Col3)
-            )
-            PARTITION BY HASH(Col1)
-            WITH (STORE = COLUMN, AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 10);
-        )";
+        //        Tests::NCommon::TLoggerInit(kikimr).Initialize();
 
-        auto result = session.ExecuteSchemeQuery(query).GetValueSync();
-        UNIT_ASSERT_C(result.GetStatus() == NYdb::EStatus::SUCCESS, result.GetIssues().ToString());
+        auto csController = NYDBTest::TControllers::RegisterCSControllerGuard<NYDBTest::NColumnShard::TController>();
+        csController->SetOverrideReduceMemoryIntervalLimit(1LLU << 30);
 
-        // Shuffled
-        auto client = kikimr.GetQueryClient();
-        { 
-            auto prepareResult = client.ExecuteQuery(R"(
-                REPLACE INTO `/Root/ColumnShard` (Col3, Col4, Col2, Col1) VALUES
-                    ("test100", "100", 1000, 100u);
-            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT_C(prepareResult.IsSuccess(), prepareResult.GetIssues().ToString());
+        {
+            auto alterQuery = TStringBuilder() <<
+                R"(ALTER OBJECT `/Root/olapStore` (TYPE TABLESTORE) SET (ACTION=UPSERT_OPTIONS, `COMPACTION_PLANNER.CLASS_NAME`=`s-buckets`,
+                    `COMPACTION_PLANNER.FEATURES`=`{"logic_name" : "slices"}`);
+                )";
+            auto session = tableClient.CreateSession().GetValueSync().GetSession();
+            auto alterResult = session.ExecuteSchemeQuery(alterQuery).GetValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(alterResult.GetStatus(), NYdb::EStatus::SUCCESS, alterResult.GetIssues().ToString());
+        }
+        WriteTestData(kikimr, "/Root/olapStore/olapTable", 1000000, 300000000, 10000);
+        WriteTestData(kikimr, "/Root/olapStore/olapTable", 1100000, 300100000, 10000);
+        csController->WaitCompactions(TDuration::Seconds(5));
+        {
+            auto alterQuery = TStringBuilder() <<
+                R"(ALTER OBJECT `/Root/olapStore` (TYPE TABLESTORE) SET (ACTION=UPSERT_OPTIONS, `COMPACTION_PLANNER.CLASS_NAME`=`s-buckets`,
+                    `COMPACTION_PLANNER.FEATURES`=`{"logic_name" : "one_head"}`);
+                )";
+            auto session = tableClient.CreateSession().GetValueSync().GetSession();
+            auto alterResult = session.ExecuteSchemeQuery(alterQuery).GetValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(alterResult.GetStatus(), NYdb::EStatus::SUCCESS, alterResult.GetIssues().ToString());
+        }
+        WriteTestData(kikimr, "/Root/olapStore/olapTable", 1200000, 300200000, 10000);
+        WriteTestData(kikimr, "/Root/olapStore/olapTable", 1300000, 300300000, 10000);
+        csController->WaitCompactions(TDuration::Seconds(5));
+
+        {
+            auto alterQuery = TStringBuilder() <<
+                R"(ALTER OBJECT `/Root/olapStore` (TYPE TABLESTORE) SET (ACTION=UPSERT_OPTIONS, `COMPACTION_PLANNER.CLASS_NAME`=`l-buckets`);
+                )";
+            auto session = tableClient.CreateSession().GetValueSync().GetSession();
+            auto alterResult = session.ExecuteSchemeQuery(alterQuery).GetValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(alterResult.GetStatus(), NYdb::EStatus::SUCCESS, alterResult.GetIssues().ToString());
+        }
+        WriteTestData(kikimr, "/Root/olapStore/olapTable", 1400000, 300400000, 10000);
+        WriteTestData(kikimr, "/Root/olapStore/olapTable", 2000000, 200000000, 70000);
+        csController->WaitCompactions(TDuration::Seconds(5));
+
+        {
+            auto alterQuery = TStringBuilder() << "(ALTER OBJECT `/Root/olapStore` (TYPE TABLESTORE) SET (ACTION=UPSERT_OPTIONS, `COMPACTION_PLANNER.CLASS_NAME`=`error-buckets`);";
+            auto session = tableClient.CreateSession().GetValueSync().GetSession();
+            auto alterResult = session.ExecuteSchemeQuery(alterQuery).GetValueSync();
+            UNIT_ASSERT_VALUES_EQUAL_C(alterResult.GetStatus(), NYdb::EStatus::GENERIC_ERROR, alterResult.GetIssues().ToString());
         }
 
         {
-            auto prepareResult = client.ExecuteQuery(R"(
-                REPLACE INTO `/Root/ColumnShard` (Col1, Col3, Col2, Col4) VALUES
-                    (1u, "test1", 10, "1"), (2u, "test2", NULL, "2"), (3u, "test3", 12, NULL), (4u, "test4", NULL, NULL);
-            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT_C(prepareResult.IsSuccess(), prepareResult.GetIssues().ToString());
+            auto it = tableClient.StreamExecuteScanQuery(R"(
+                --!syntax_v1
+
+                SELECT
+                    COUNT(*)
+                FROM `/Root/olapStore/olapTable`
+            )").GetValueSync();
+
+            UNIT_ASSERT_C(it.IsSuccess(), it.GetIssues().ToString());
+            TString result = StreamResultToYson(it);
+            Cout << result << Endl;
+            CompareYson(result, R"([[120000u;]])");
         }
 
-        auto it = client.StreamExecuteQuery(R"(
-            SELECT Col1, Col3, Col2, Col4 FROM `/Root/ColumnShard` ORDER BY Col1, Col3, Col2, Col4;
-        )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(it.GetStatus(), EStatus::SUCCESS, it.GetIssues().ToString());
-        TString output = StreamResultToYson(it);
-        CompareYson(output, R"([[1u;"test1";[10];["1"]];[2u;"test2";#;["2"]];[3u;"test3";[12];#];[4u;"test4";#;#];[100u;"test100";[1000];["100"]]])");
-    }
-
-    Y_UNIT_TEST(OlapReplace_InsertUpsertError) {
-        NKikimrConfig::TAppConfig appConfig;
-        appConfig.MutableTableServiceConfig()->SetEnableOlapSink(true);
-        auto settings = TKikimrSettings()
-            .SetAppConfig(appConfig)
-            .SetWithSampleTables(false);
-
-        TKikimrRunner kikimr(settings);
-        Tests::NCommon::TLoggerInit(kikimr).Initialize();
-        TTableWithNullsHelper(kikimr).CreateTableWithNulls();
-
-        auto session = kikimr.GetTableClient().CreateSession().GetValueSync().GetSession();
-
-        const TString query = R"(
-            CREATE TABLE `/Root/ColumnShard` (
-                Col1 Uint64 NOT NULL,
-                Col2 Int32,
-                PRIMARY KEY (Col1)
-            )
-            PARTITION BY HASH(Col1)
-            WITH (STORE = COLUMN, AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 16);
-        )";
-
-        auto result = session.ExecuteSchemeQuery(query).GetValueSync();
-        UNIT_ASSERT_C(result.GetStatus() == NYdb::EStatus::SUCCESS, result.GetIssues().ToString());
-
-        auto client = kikimr.GetQueryClient();
-        { 
-            auto prepareResult = client.ExecuteQuery(R"(
-                UPSERT INTO `/Root/ColumnShard` (Col1, Col2) VALUES (1u, 1)
-            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT(!prepareResult.IsSuccess());
-            UNIT_ASSERT_C(
-                prepareResult.GetIssues().ToString().Contains("is not supported for olap tables"),
-                prepareResult.GetIssues().ToString());
-        }
-
-        { 
-            auto prepareResult = client.ExecuteQuery(R"(
-                INSERT INTO `/Root/ColumnShard` (Col1, Col2) VALUES (2u, 2)
-            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT(!prepareResult.IsSuccess());
-            UNIT_ASSERT_C(
-                prepareResult.GetIssues().ToString().Contains("is not supported for olap tables"),
-                prepareResult.GetIssues().ToString());
-        }
-
-        {
-            auto it = client.StreamExecuteQuery(R"(
-                SELECT * FROM `/Root/ColumnShard`;
-            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(it.GetStatus(), EStatus::SUCCESS, it.GetIssues().ToString());
-            TString output = StreamResultToYson(it);
-            CompareYson(output, R"([])");
-        }
-    }
-
-    Y_UNIT_TEST(OlapReplace_Duplicates) {
-        NKikimrConfig::TAppConfig appConfig;
-        appConfig.MutableTableServiceConfig()->SetEnableOlapSink(true);
-        auto settings = TKikimrSettings()
-            .SetAppConfig(appConfig)
-            .SetWithSampleTables(false);
-
-        TKikimrRunner kikimr(settings);
-        Tests::NCommon::TLoggerInit(kikimr).Initialize();
-        TTableWithNullsHelper(kikimr).CreateTableWithNulls();
-
-        auto session = kikimr.GetTableClient().CreateSession().GetValueSync().GetSession();
-
-        const TString query = R"(
-            CREATE TABLE `/Root/ColumnShard` (
-                Col1 Uint64 NOT NULL,
-                Col2 Int32,
-                PRIMARY KEY (Col1)
-            )
-            PARTITION BY HASH(Col1)
-            WITH (STORE = COLUMN, AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 10);
-        )";
-
-        auto result = session.ExecuteSchemeQuery(query).GetValueSync();
-        UNIT_ASSERT_C(result.GetStatus() == NYdb::EStatus::SUCCESS, result.GetIssues().ToString());
-
-        auto client = kikimr.GetQueryClient();
-        { 
-            auto prepareResult = client.ExecuteQuery(R"(
-                REPLACE INTO `/Root/ColumnShard` (Col1, Col2) VALUES
-                    (100u, 1000), (100u, 1000);
-            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT_C(prepareResult.IsSuccess(), prepareResult.GetIssues().ToString());
-        }
-
-        { 
-            auto prepareResult = client.ExecuteQuery(R"(
-                REPLACE INTO `/Root/ColumnShard` (Col1, Col2) VALUES
-                    (100u, 1000), (100u, 1000);
-            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT_C(prepareResult.IsSuccess(), prepareResult.GetIssues().ToString());
-        }
-
-        auto it = client.StreamExecuteQuery(R"(
-            SELECT * FROM `/Root/ColumnShard` ORDER BY Col1, Col2;
-        )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-        UNIT_ASSERT_VALUES_EQUAL_C(it.GetStatus(), EStatus::SUCCESS, it.GetIssues().ToString());
-        TString output = StreamResultToYson(it);
-        CompareYson(output, R"([[100u;[1000]]])");
-    }
-
-    Y_UNIT_TEST(OlapReplace_DisableOlapSink) {
-        NKikimrConfig::TAppConfig appConfig;
-        appConfig.MutableTableServiceConfig()->SetEnableOlapSink(false);
-        auto settings = TKikimrSettings()
-            .SetAppConfig(appConfig)
-            .SetWithSampleTables(false);
-
-        TKikimrRunner kikimr(settings);
-        Tests::NCommon::TLoggerInit(kikimr).Initialize();
-        TTableWithNullsHelper(kikimr).CreateTableWithNulls();
-
-        auto session = kikimr.GetTableClient().CreateSession().GetValueSync().GetSession();
-
-        const TString query = R"(
-            CREATE TABLE `/Root/ColumnShard` (
-                Col1 Uint64 NOT NULL,
-                Col2 Int32,
-                PRIMARY KEY (Col1)
-            )
-            PARTITION BY HASH(Col1)
-            WITH (STORE = COLUMN, AUTO_PARTITIONING_MIN_PARTITIONS_COUNT = 16);
-        )";
-
-        auto result = session.ExecuteSchemeQuery(query).GetValueSync();
-        UNIT_ASSERT_C(result.GetStatus() == NYdb::EStatus::SUCCESS, result.GetIssues().ToString());
-
-        auto client = kikimr.GetQueryClient();
-        { 
-            auto prepareResult = client.ExecuteQuery(R"(
-                REPLACE INTO `/Root/ColumnShard` (Col1, Col2) VALUES (1u, 1)
-            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT(!prepareResult.IsSuccess());
-            UNIT_ASSERT_C(
-                prepareResult.GetIssues().ToString().Contains("Data manipulation queries do not support column shard tables."),
-                prepareResult.GetIssues().ToString());
-        }
-
-        {
-            auto it = client.StreamExecuteQuery(R"(
-                SELECT * FROM `/Root/ColumnShard`;
-            )", NYdb::NQuery::TTxControl::BeginTx().CommitTx()).ExtractValueSync();
-            UNIT_ASSERT_VALUES_EQUAL_C(it.GetStatus(), EStatus::SUCCESS, it.GetIssues().ToString());
-            TString output = StreamResultToYson(it);
-            CompareYson(output, R"([])");
-        }
     }
 
 }

@@ -15,7 +15,6 @@ SRCS(
     msgbus_server_db.cpp
     msgbus_server_drain_node.cpp
     msgbus_server_fill_node.cpp
-    msgbus_server_get.cpp
     msgbus_server_hive_create_tablet.cpp
     msgbus_server_keyvalue.cpp
     msgbus_server_persqueue.cpp
@@ -27,7 +26,6 @@ SRCS(
     msgbus_server_pq_read_session_info.cpp
     msgbus_server_resolve_node.cpp
     msgbus_server_ic_debug.cpp
-    msgbus_server_load.cpp
     msgbus_server_local_enumerate_tablets.cpp
     msgbus_server_local_minikql.cpp
     msgbus_server_local_scheme_tx.cpp
@@ -73,7 +71,7 @@ PEERDIR(
     ydb/core/engine
     ydb/core/engine/minikql
     ydb/core/grpc_services
-    ydb/core/grpc_services/auth_processor
+    ydb/core/security/certificate_check
     ydb/core/grpc_services/base
     ydb/core/keyvalue
     ydb/core/kqp/common

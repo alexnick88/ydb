@@ -62,12 +62,13 @@
                                                             "UserID"
                                                         ],
                                                         "ReadRanges": [
-                                                            "EventTime (-\u221e, +\u221e)",
                                                             "CounterID (-\u221e, +\u221e)",
                                                             "EventDate (-\u221e, +\u221e)",
                                                             "UserID (-\u221e, +\u221e)",
+                                                            "EventTime (-\u221e, +\u221e)",
                                                             "WatchID (-\u221e, +\u221e)"
                                                         ],
+                                                        "Scan": "Parallel",
                                                         "Table": "clickbench/plans/row/hits"
                                                     }
                                                 ],
@@ -133,12 +134,13 @@
                                                                     "UserID"
                                                                 ],
                                                                 "ReadRanges": [
-                                                                    "EventTime (-\u221e, +\u221e)",
                                                                     "CounterID (-\u221e, +\u221e)",
                                                                     "EventDate (-\u221e, +\u221e)",
                                                                     "UserID (-\u221e, +\u221e)",
+                                                                    "EventTime (-\u221e, +\u221e)",
                                                                     "WatchID (-\u221e, +\u221e)"
                                                                 ],
+                                                                "Scan": "Parallel",
                                                                 "Table": "clickbench/plans/row/hits"
                                                             }
                                                         ],
@@ -163,10 +165,10 @@
                                 "UserID"
                             ],
                             "scan_by": [
-                                "EventTime (-\u221e, +\u221e)",
                                 "CounterID (-\u221e, +\u221e)",
                                 "EventDate (-\u221e, +\u221e)",
                                 "UserID (-\u221e, +\u221e)",
+                                "EventTime (-\u221e, +\u221e)",
                                 "WatchID (-\u221e, +\u221e)"
                             ],
                             "type": "FullScan"

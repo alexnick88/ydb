@@ -12,6 +12,7 @@
 #include <ydb/core/protos/counters_pq.pb.h>
 #include <ydb/core/protos/msgbus.pb.h>
 #include <ydb/library/persqueue/topic_parser/topic_parser.h>
+#include <ydb/library/protobuf_printer/security_printer.h>
 #include <ydb/public/lib/base/msgbus.h>
 #include <library/cpp/html/pcdata/pcdata.h>
 #include <library/cpp/monlib/service/pages/templates.h>
@@ -107,7 +108,7 @@ void TPartition::HandleMonitoring(TEvPQ::TEvMonRequest::TPtr& ev, const TActorCo
         out << "AvgWriteSize per " << avg.GetDuration().ToString() << " is " << avg.GetValue() << " bytes";
         res.push_back(out.Str()); out.Clear();
     }
-    out << Config.DebugString(); res.push_back(out.Str()); out.Clear();
+    out << SecureDebugString(Config); res.push_back(out.Str()); out.Clear();
     HTML(out) {
         DIV_CLASS_ID("tab-pane fade", Sprintf("partition_%u", Partition.InternalPartitionId)) {
             TABLE_SORTABLE_CLASS("table") {

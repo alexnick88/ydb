@@ -11,6 +11,7 @@
 #include <ydb/core/tx/columnshard/engines/scheme/versions/filtered_scheme.h>
 #include <ydb/core/formats/arrow/arrow_helpers.h>
 #include <ydb/core/formats/arrow/reader/position.h>
+#include <util/string/join.h>
 
 namespace NKikimr::NOlap {
 class IDataReader;
@@ -32,8 +33,10 @@ private:
     NArrow::TReplaceKey StartReplaceKey;
     NArrow::TReplaceKey FinishReplaceKey;
     YDB_READONLY_DEF(std::shared_ptr<TSpecialReadContext>, Context);
+    YDB_READONLY(TSnapshot, RecordSnapshotMin, TSnapshot::Zero());
     YDB_READONLY(TSnapshot, RecordSnapshotMax, TSnapshot::Zero());
     YDB_READONLY(ui32, RecordsCount, 0);
+    YDB_READONLY_DEF(std::optional<ui64>, ShardingVersionOptional);
     YDB_READONLY(ui32, IntervalsCount, 0);
     virtual NJson::TJsonValue DoDebugJson() const = 0;
     bool MergingStartedFlag = false;
@@ -55,6 +58,9 @@ protected:
     virtual void DoAbort() = 0;
     virtual void DoApplyIndex(const NIndexes::TIndexCheckerContainer& indexMeta) = 0;
     virtual bool DoAddSequentialEntityIds(const ui32 entityId) = 0;
+    virtual NJson::TJsonValue DoDebugJsonForMemory() const {
+        return NJson::JSON_MAP;
+    }
 public:
     void OnInitResourcesGuard(const std::shared_ptr<IDataSource>& sourcePtr);
 
@@ -119,7 +125,7 @@ public:
     void InitFetchingPlan(const std::shared_ptr<TFetchingScript>& fetching);
 
     std::shared_ptr<arrow::RecordBatch> GetLastPK() const {
-        return Finish.ExtractSortingPosition();
+        return Finish.BuildSortingCursor().ExtractSortingPosition(Finish.GetSortFields());
     }
     void IncIntervalsCount() {
         ++IntervalsCount;
@@ -143,8 +149,9 @@ public:
         DoAbort();
     }
 
-    virtual NJson::TJsonValue DebugJsonForMemory() const {
+    NJson::TJsonValue DebugJsonForMemory() const {
         NJson::TJsonValue result = NJson::JSON_MAP;
+        result.InsertValue("details", DoDebugJsonForMemory());
         result.InsertValue("count", RecordsCount);
         return result;
     }
@@ -176,17 +183,19 @@ public:
 
     void RegisterInterval(TFetchingInterval& interval);
 
-    IDataSource(const ui32 sourceIdx, const std::shared_ptr<TSpecialReadContext>& context, 
-        const NArrow::TReplaceKey& start, const NArrow::TReplaceKey& finish,
-        const TSnapshot& recordSnapshotMax, const ui32 recordsCount)
+    IDataSource(const ui32 sourceIdx, const std::shared_ptr<TSpecialReadContext>& context,
+        const NArrow::TReplaceKey& start, const NArrow::TReplaceKey& finish, const TSnapshot& recordSnapshotMin, const TSnapshot& recordSnapshotMax,
+                const ui32 recordsCount, const std::optional<ui64> shardingVersion)
         : SourceIdx(sourceIdx)
         , Start(context->GetReadMetadata()->BuildSortedPosition(start))
         , Finish(context->GetReadMetadata()->BuildSortedPosition(finish))
         , StartReplaceKey(start)
         , FinishReplaceKey(finish)
         , Context(context)
+        , RecordSnapshotMin(recordSnapshotMin)
         , RecordSnapshotMax(recordSnapshotMax)
         , RecordsCount(recordsCount)
+        , ShardingVersionOptional(shardingVersion)
     {
         AFL_DEBUG(NKikimrServices::TX_COLUMNSHARD_SCAN)("event", "portions_for_merge")("start", Start.DebugJson())("finish", Finish.DebugJson());
         if (Start.IsReverseSort()) {
@@ -222,10 +231,23 @@ private:
         return result;
     }
 
-    virtual NJson::TJsonValue DebugJsonForMemory() const override {
-        NJson::TJsonValue result = TBase::DebugJsonForMemory();
+    virtual NJson::TJsonValue DoDebugJsonForMemory() const override {
+        NJson::TJsonValue result = TBase::DoDebugJsonForMemory();
+        auto columns = Portion->GetColumnIds();
+        for (auto&& i : SequentialEntityIds) {
+            AFL_VERIFY(columns.erase(i));
+        }
+//        result.InsertValue("sequential_columns", JoinSeq(",", SequentialEntityIds));
+        if (SequentialEntityIds.size()) {
+            result.InsertValue("min_memory_seq", Portion->GetMinMemoryForReadColumns(SequentialEntityIds));
+            result.InsertValue("min_memory_seq_blobs", Portion->GetColumnBlobBytes(SequentialEntityIds));
+            result.InsertValue("in_mem", Portion->GetColumnRawBytes(columns, false));
+        }
+        result.InsertValue("columns_in_mem", JoinSeq(",", columns));
+        result.InsertValue("portion_id", Portion->GetPortionId());
         result.InsertValue("raw", Portion->GetTotalRawBytes());
         result.InsertValue("blob", Portion->GetTotalBlobBytes());
+        result.InsertValue("read_memory", GetColumnRawBytes(Portion->GetColumnIds()));
         return result;
     }
     virtual void DoAbort() override;
@@ -287,9 +309,9 @@ public:
 
     TPortionDataSource(const ui32 sourceIdx, const std::shared_ptr<TPortionInfo>& portion, const std::shared_ptr<TSpecialReadContext>& context,
         const NArrow::TReplaceKey& start, const NArrow::TReplaceKey& finish)
-        : TBase(sourceIdx, context, start, finish, portion->RecordSnapshotMax(), portion->GetRecordsCount())
+        : TBase(sourceIdx, context, start, finish, portion->RecordSnapshotMin(), portion->RecordSnapshotMax(), portion->GetRecordsCount(), portion->GetShardingVersionOptional())
         , Portion(portion)
-        , Schema(GetContext()->GetReadMetadata()->GetLoadSchema(Portion->GetMinSnapshot()))
+        , Schema(GetContext()->GetReadMetadata()->GetLoadSchemaVerified(*Portion))
     {
     }
 };
@@ -325,7 +347,6 @@ private:
     virtual bool DoAddSequentialEntityIds(const ui32 /*entityId*/) override {
         return false;
     }
-
 public:
     virtual THashMap<TChunkAddress, TString> DecodeBlobAddresses(NBlobOperations::NRead::TCompositeReadBlobs&& blobsOriginal) const override {
         THashMap<TChunkAddress, TString> result;
@@ -360,7 +381,7 @@ public:
 
     TCommittedDataSource(const ui32 sourceIdx, const TCommittedBlob& committed, const std::shared_ptr<TSpecialReadContext>& context,
         const NArrow::TReplaceKey& start, const NArrow::TReplaceKey& finish)
-        : TBase(sourceIdx, context, start, finish, committed.GetSnapshot(), committed.GetRecordsCount())
+        : TBase(sourceIdx, context, start, finish, committed.GetSnapshot(), committed.GetSnapshot(), committed.GetRecordsCount(), {})
         , CommittedBlob(committed) {
 
     }

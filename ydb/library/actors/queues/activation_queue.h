@@ -2,6 +2,7 @@
 
 #include "defs.h"
 #include "mpmc_ring_queue.h"
+#include "mpmc_ring_queue_blocking.h"
 #include <atomic>
 
 
@@ -20,7 +21,6 @@ public:
         : IsMPSC(isMPSC)
     {}
 
-
     void Push(ui32 activation, ui64 revolvingCounter) {
         if (!IsNeedToWriteToOldQueue.load(std::memory_order_acquire)) {
             if (ActivationQueue.TryPush(activation)) {
@@ -38,8 +38,13 @@ public:
         std::optional<ui32> activation;
         if (IsMPSC) {
             activation = ActivationQueue.TryPopSingleConsumer();
-        } else {
+        } else if (TlsThreadContext) {
             activation = ActivationQueue.TryPop(TlsThreadContext->ActivationPopMode);
+        } else {
+            // must be for destruction of actorsystem outside of actorsystem threads
+            using EPopMode = decltype(ActivationQueue)::EPopMode;
+            EPopMode popMode = EPopMode::ReallySlow;
+            activation = ActivationQueue.TryPop(popMode);
         }
         if (activation) {
             return *activation;
@@ -50,6 +55,36 @@ public:
         return 0; 
     }
 
+};
+
+class TBlockingActivationQueue {
+    NThreading::TPadded<TMPMCBlockingRingQueue<20>> ActivationQueue;
+
+public:
+    TBlockingActivationQueue(bool)
+    {}
+
+
+    void Push(ui32 activation, ui64) {
+        for (;;) {
+            if (ActivationQueue.TryPush(activation)) {
+                return;
+            }
+        }
+    }
+
+    ui32 Pop(ui64) {
+        std::optional<ui32> activation;
+        activation = ActivationQueue.TryPop();
+        if (activation) {
+            return *activation;
+        }
+        return 0; 
+    }
+
+    void Stop() {
+        ActivationQueue.Stop();
+    }
 };
 
 } // NActors

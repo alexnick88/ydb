@@ -2,7 +2,7 @@
 
 #include "common.h"
 
-#include <ydb/core/protos/tx_columnshard.pb.h>
+#include <ydb/core/tx/columnshard/engines/protos/portion_info.pb.h>
 
 #include <ydb/core/tx/columnshard/blob.h>
 #include <ydb/core/tx/columnshard/common/snapshot.h>
@@ -31,7 +31,7 @@ struct TChunkMeta: public TSimpleChunkMeta {
 private:
     using TBase = TSimpleChunkMeta;
     TChunkMeta() = default;
-    TConclusionStatus DeserializeFromProto(const TChunkAddress& address, const NKikimrTxColumnShard::TIndexColumnMeta& proto, const TSimpleColumnInfo& columnInfo);
+    [[nodiscard]] TConclusionStatus DeserializeFromProto(const TChunkAddress& address, const NKikimrTxColumnShard::TIndexColumnMeta& proto, const TSimpleColumnInfo& columnInfo);
     friend class TColumnRecord;
 public:
     TChunkMeta(TSimpleChunkMeta&& baseMeta)
@@ -40,7 +40,7 @@ public:
 
     }
 
-    static TConclusion<TChunkMeta> BuildFromProto(const TChunkAddress& address, const NKikimrTxColumnShard::TIndexColumnMeta& proto, const TSimpleColumnInfo& columnInfo) {
+    [[nodiscard]] static TConclusion<TChunkMeta> BuildFromProto(const TChunkAddress& address, const NKikimrTxColumnShard::TIndexColumnMeta& proto, const TSimpleColumnInfo& columnInfo) {
         TChunkMeta result;
         auto parse = result.DeserializeFromProto(address, proto, columnInfo);
         if (!parse) {
@@ -91,7 +91,7 @@ public:
     }
 
     void RegisterBlobIdx(const ui16 blobIdx) {
-//        AFL_VERIFY(!BlobRange.BlobId.GetTabletId())("original", BlobRange.BlobId.ToStringNew())("new", blobId.ToStringNew());
+        AFL_VERIFY(!BlobRange.BlobIdx)("original", BlobRange.BlobIdx)("new", blobIdx);
         BlobRange.BlobIdx = blobIdx;
     }
 
@@ -165,7 +165,8 @@ public:
     TString DebugString() const {
         return TStringBuilder()
             << "column_id:" << ColumnId << ";"
-            << "blob_range:" << BlobRange << ";"
+            << "chunk_idx:" << Chunk << ";"
+            << "blob_range:" << BlobRange.ToString() << ";"
             ;
     }
 

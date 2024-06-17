@@ -49,6 +49,20 @@
             },
             "formula": "build/external_resources/bloat/resources.json"
         },
+        "buf": {
+            "executable": {
+                "buf": [
+                    "buf"
+                ]
+            },
+            "formula": {
+                "by_platform": {
+                    "linux-x86_64": {
+                        "uri": "sbr:1812152858"
+                    }
+                }
+            }
+        },
         "clang-format": {
             "executable": {
                 "clang-format": [
@@ -337,6 +351,22 @@
                 "bloat": {
                     "bottle": "bloat",
                     "executable": "bloat"
+                }
+            }
+        },
+        "buf": {
+            "platforms": [
+                {
+                    "default": true,
+                    "host": {
+                        "os": "LINUX"
+                    }
+                }
+            ],
+            "tools": {
+                "buf": {
+                    "bottle": "buf",
+                    "executable": "buf"
                 }
             }
         },
@@ -1793,6 +1823,10 @@
             }
         },
         "python3": {
+            "params": {
+                "match_root": "YMAKE_PYTHON3",
+                "use_bundle": true
+            },
             "platforms": [
                 {
                     "default": true,
@@ -1956,6 +1990,9 @@
             "description": "Run bloat tool",
             "visible": false
         },
+        "buf": {
+            "description": "Protobuf lint and breaking change detector"
+        },
         "c++": {
             "description": "Run C++ compiler"
         },
@@ -2025,7 +2062,8 @@
             "visible": false
         },
         "ytexec": {
-            "description": "Run ytexec"
+            "description": "Run ytexec",
+            "visible": false
         }
     }
 }

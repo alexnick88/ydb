@@ -39,6 +39,8 @@ FederatedQuery::IamAuth::IdentityCase GetIamAuth(const FederatedQuery::Connectio
             return setting.monitoring().auth().identity_case();
         case FederatedQuery::ConnectionSetting::kPostgresqlCluster:
             return setting.postgresql_cluster().auth().identity_case();
+        case FederatedQuery::ConnectionSetting::kGreenplumCluster:
+            return setting.greenplum_cluster().auth().identity_case();
         case FederatedQuery::ConnectionSetting::CONNECTION_NOT_SET:
             return FederatedQuery::IamAuth::IDENTITY_NOT_SET;
     }
@@ -884,7 +886,12 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvModifyQuery
             // TODO: move to run actor priority selection
             TSet<TString> disabledConnections;
             for (const auto& connection: GetEntities<FederatedQuery::Connection>(resultSets[resultSets.size() - 3], CONNECTION_COLUMN_NAME, Config->Proto.GetIgnorePrivateSources(), commonCounters)) {
-                if (!Config->AvailableConnections.contains(connection.content().setting().connection_case())) {
+                auto connectionCase = connection.content().setting().connection_case();
+                if (!Config->AvailableConnections.contains(connectionCase)) {
+                    disabledConnections.insert(connection.meta().id());
+                    continue;
+                }
+                if ((query.content().type() == FederatedQuery::QueryContent::STREAMING) && !Config->AvailableStreamingConnections.contains(connectionCase)) {
                     disabledConnections.insert(connection.meta().id());
                     continue;
                 }
@@ -1038,13 +1045,18 @@ void TYdbControlPlaneStorageActor::Handle(TEvControlPlaneStorage::TEvModifyQuery
             "DELETE FROM `" JOBS_TABLE_NAME "` ON\n"
             "SELECT * FROM $to_delete;\n"
             "UPDATE `" QUERIES_TABLE_NAME "` SET \n"
-            "   `" LAST_JOB_ID_COLUMN_NAME "` = $job_id, `" VISIBILITY_COLUMN_NAME "` = $visibility, `" AUTOMATIC_COLUMN_NAME "` = $automatic,\n"
+            "   `" VISIBILITY_COLUMN_NAME "` = $visibility, `" AUTOMATIC_COLUMN_NAME "` = $automatic,\n"
             "   `" NAME_COLUMN_NAME "` = $name, `" EXECUTE_MODE_COLUMN_NAME "` = $execute_mode,\n"
             "   `" REVISION_COLUMN_NAME "` = $revision, `" STATUS_COLUMN_NAME "` = $status, "
         );
-        writeQueryBuilder.AddText(
-            (request.execute_mode() != FederatedQuery::SAVE ? "`" INTERNAL_COLUMN_NAME "` = $internal,\n" : TString{"\n"})
-        );
+
+        if (request.execute_mode() != FederatedQuery::SAVE) {
+            writeQueryBuilder.AddText(
+                "   `" LAST_JOB_ID_COLUMN_NAME "` = $job_id, "
+                "   `" INTERNAL_COLUMN_NAME "` = $internal,\n"
+            );
+        }
+
         writeQueryBuilder.AddText(
             "   `" QUERY_TYPE_COLUMN_NAME "` = $query_type, `" QUERY_COLUMN_NAME "` = $query,\n"
             "   `" RESULT_ID_COLUMN_NAME "` = $result_id, `" META_REVISION_COLUMN_NAME "` = `" META_REVISION_COLUMN_NAME "` + 1,\n"

@@ -4,6 +4,7 @@
 namespace NKikimr::NColumnShard {
 
 bool TTxInsertTableCleanup::Execute(TTransactionContext& txc, const TActorContext& /*ctx*/) {
+    TMemoryProfileGuard mpg("TTxInsertTableCleanup::Execute");
     TBlobGroupSelector dsGroupSelector(Self->Info());
     NOlap::TDbWrapper dbTable(txc.DB, &dsGroupSelector);
     NIceDb::TNiceDb db(txc.DB);
@@ -17,18 +18,20 @@ bool TTxInsertTableCleanup::Execute(TTransactionContext& txc, const TActorContex
     for (auto& [abortedWriteId, abortedData] : allAborted) {
         Self->InsertTable->EraseAbortedOnExecute(dbTable, abortedData, BlobsAction);
     }
-    BlobsAction->OnExecuteTxAfterRemoving(*Self, blobManagerDb, true);
+    BlobsAction->OnExecuteTxAfterRemoving(blobManagerDb, true);
     return true;
 }
 void TTxInsertTableCleanup::Complete(const TActorContext& /*ctx*/) {
+    TMemoryProfileGuard mpg("TTxInsertTableCleanup::Complete");
     auto allAborted = Self->InsertTable->GetAborted();
     for (auto& [abortedWriteId, abortedData] : allAborted) {
         Self->InsertTable->EraseAbortedOnComplete(abortedData);
     }
 
     Y_ABORT_UNLESS(BlobsAction);
-    BlobsAction->OnCompleteTxAfterRemoving(*Self, true);
-    Self->EnqueueBackgroundActivities();
+    BlobsAction->OnCompleteTxAfterRemoving(true);
+    Self->BackgroundController.FinishCleanupInsertTable();
+    Self->SetupCleanupInsertTable();
 }
 
 }
